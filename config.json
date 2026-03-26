@@ -1,0 +1,182 @@
+{
+  "version": "2.0",
+  "description": "Agents 2.0 - Team-based AI orchestration",
+  "teams": {
+    "frontend": {
+      "description": "UI/UX, React, Vue, CSS, accessibility, web performance",
+      "models": {
+        "primary": "openai/gpt-4o-mini",
+        "fallback1": "google/gemini-2.0-flash-001",
+        "fallback2": "deepseek/deepseek-chat"
+      }
+    },
+    "backend": {
+      "description": "APIs, databases, business logic, server-side, microservices",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o-mini",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "devops": {
+      "description": "CI/CD, Docker, Kubernetes, infrastructure, deployment, monitoring",
+      "models": {
+        "primary": "openai/gpt-4o-mini",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "security": {
+      "description": "OWASP audit, penetration testing, vulnerability scanning, auth review, threat modeling",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "google/gemini-2.0-flash-001",
+        "fallback2": "deepseek/deepseek-chat"
+      }
+    },
+    "qa": {
+      "description": "Unit tests, integration tests, E2E, test plans, edge cases, quality assurance",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o-mini",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "mobile": {
+      "description": "iOS, Android, React Native, Flutter, mobile UX, app store",
+      "models": {
+        "primary": "openai/gpt-4o-mini",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "data": {
+      "description": "Database design, SQL optimization, data pipelines, analytics, schema design",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o-mini",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "aiml": {
+      "description": "ML models, training, inference, AI architecture, LLM integration, embeddings",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "analyst": {
+      "description": "Business analysis, market research, metrics, competitive analysis, insights",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o-mini",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "strategy": {
+      "description": "Business strategy, GTM, positioning, roadmap, competitive advantage",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "writer": {
+      "description": "Copywriting, documentation, reports, blog posts, emails, content",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "planner": {
+      "description": "Project planning, sprint planning, decomposition, timelines, task management",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o-mini",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    }
+    ,
+    "marketing": {
+      "description": "TAM/SAM/SOM, acquisition channels, growth metrics, brand positioning, customer personas",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "legal": {
+      "description": "GDPR, EU AI Act, compliance, contracts, IP law, regulatory requirements for EU/UK/DE",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "risk": {
+      "description": "Risk register, probability/impact matrix, mitigation strategies, existential risks",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "finance": {
+      "description": "Financial modeling, unit economics, CAC/LTV, burn rate, pricing, fundraising prep",
+      "models": {
+        "primary": "deepseek/deepseek-chat",
+        "fallback1": "openai/gpt-4o",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "researcher": {
+      "description": "Market research with real sources, statistics, case studies, competitor intelligence",
+      "models": {
+        "primary": "openai/gpt-4o-mini",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    }
+  },
+  "orchestration": {
+    "decomposer": {
+      "model": "deepseek/deepseek-chat",
+      "description": "Breaks tasks into parallel team subtasks"
+    },
+    "synthesizer": {
+      "model": "openai/gpt-4o",
+      "description": "Merges all team outputs into final answer"
+    },
+    "prompt_engineer": {
+      "model": "openai/gpt-4o",
+      "description": "Optimizes all prompts before sending to teams"
+    },
+    "director": {
+      "model": "openai/gpt-4o",
+      "description": "Pre-project analysis and planning director"
+    },
+    "audit_lead": {
+      "model": "openai/gpt-4o",
+      "description": "Final cross-team quality and security audit"
+    }
+  },
+  "api": {
+    "provider": "openrouter",
+    "base_url": "https://openrouter.ai/api/v1/chat/completions",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "timeout_seconds": 60,
+    "max_retries": 2
+  },
+  "memory": {
+    "max_lines": 40,
+    "truncate_to": 35,
+    "enabled": true
+  },
+  "logging": {
+    "log_full_prompts": true,
+    "log_responses": true,
+    "response_preview_chars": 500
+  }
+}
