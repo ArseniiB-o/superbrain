@@ -310,7 +310,7 @@ def run_team(idx_task):
 
     try:
         proc = subprocess.run(
-            [lead_script, subtask],
+            ["bash", lead_script, subtask],
             capture_output=True,
             text=True,
             timeout=90,

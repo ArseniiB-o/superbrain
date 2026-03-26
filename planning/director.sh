@@ -106,7 +106,7 @@ run_team() {
 
     printf '  \033[0;36m▶\033[0m  [planning/director] Starting %s analysis...\n' "$team_label" >&2
 
-    if "$lead_script" "$task" > "$output_file" 2>/dev/null; then
+    if bash "$lead_script" "$task" > "$output_file" 2>/dev/null; then
         printf '  \033[0;32m✓\033[0m  [planning/director] %s analysis done\n' "$team_label" >&2
     else
         printf '[FAILED] %s analysis failed — proceeding without it\n' "$team_label" > "$output_file"

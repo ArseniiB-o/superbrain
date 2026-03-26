@@ -108,7 +108,7 @@ run_audit() {
 
     printf '  \033[0;36m▶\033[0m  [audit/lead] Starting %s...\n' "$audit_label" >&2
 
-    if "$lead_script" "$task" > "$output_file" 2>/dev/null; then
+    if bash "$lead_script" "$task" > "$output_file" 2>/dev/null; then
         printf '  \033[0;32m✓\033[0m  [audit/lead] %s complete\n' "$audit_label" >&2
     else
         printf '[FAILED] %s failed — proceeding without it\n' "$audit_label" > "$output_file"
