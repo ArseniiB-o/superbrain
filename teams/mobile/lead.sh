@@ -1,66 +1,96 @@
 #!/usr/bin/env bash
-# teams/mobile/lead.sh — Mobile Team Lead
-
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENTS2_DIR="$SCRIPT_DIR/../.."
-
+AGENTS2_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$AGENTS2_DIR/lib/logger.sh"
 source "$AGENTS2_DIR/lib/memory.sh"
-source "$AGENTS2_DIR/lib/fallback.sh"
 
 TEAM="mobile"
-PRIMARY_MODEL="openai/gpt-4o-mini"
-FALLBACK1_MODEL="deepseek/deepseek-chat"
-FALLBACK2_MODEL="google/gemini-2.0-flash-001"
+ROLE1_NAME="designer"
+ROLE2_NAME="coder"
+ROLE3_NAME="reviewer"
+AGENT1_MODEL="openai/gpt-4o-mini"
+AGENT2_MODEL="deepseek/deepseek-chat"
+AGENT3_MODEL="google/gemini-2.0-flash-001"
 
 TMPFILE=$(mktemp)
-trap 'rm -f "$TMPFILE"' EXIT
+WORK_DIR=$(mktemp -d)
+trap 'rm -f "$TMPFILE"; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -t 0 ]; then
-    { [ -n "${1:-}" ] && printf '%s\n\n' "$1"; cat; } > "$TMPFILE"
+  { [ -n "${1:-}" ] && printf '%s\n\n' "$1"; cat; } > "$TMPFILE"
 elif [ -n "${1:-}" ]; then
-    printf '%s' "$1" > "$TMPFILE"
+  printf '%s' "$1" > "$TMPFILE"
 else
-    echo "Error: provide task via argument or stdin" >&2; exit 1
+  echo "Error: provide task via argument or stdin" >&2; exit 1
 fi
 
 RAW_TASK=$(cat "$TMPFILE")
 TASK_SUMMARY="${RAW_TASK:0:120}"
 
-log_action "$TEAM" "lead" "$PRIMARY_MODEL" "RUNNING" "$TASK_SUMMARY" "$RAW_TASK"
-echo "🔧 [$TEAM/lead] Starting: ${TASK_SUMMARY:0:70}..." >&2
+log_action "$TEAM" "lead" "3-parallel" "RUNNING" "$TASK_SUMMARY" "$RAW_TASK"
+echo "🔧 [$TEAM] Starting 3-parallel: ${TASK_SUMMARY:0:60}..." >&2
 
-TEAM_MEMORY=$(memory_read "$TEAM")
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE1_NAME" > "$WORK_DIR/p1.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p1.txt"; } &
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE2_NAME" > "$WORK_DIR/p2.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p2.txt"; } &
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE3_NAME" > "$WORK_DIR/p3.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p3.txt"; } &
+wait
 
-echo "  📝 [$TEAM/lead] Optimizing prompt..." >&2
-OPTIMIZED_PROMPT=$(echo "$RAW_TASK" | \
-    TEAM_MEMORY="$TEAM_MEMORY" \
-    "$AGENTS2_DIR/lib/prompt_engineer.sh" "$TEAM" 2>/dev/null || echo "$RAW_TASK")
+echo "  🤖 [$TEAM] $ROLE1_NAME+$ROLE2_NAME+$ROLE3_NAME running..." >&2
 
-PROMPT_FILE=$(mktemp)
-SYSPROMPT_FILE=$(mktemp)
-trap 'rm -f "$TMPFILE" "$PROMPT_FILE" "$SYSPROMPT_FILE"' EXIT
+SP1_FILE=$(mktemp)
+SP2_FILE=$(mktemp)
+SP3_FILE=$(mktemp)
+SYNTH_FILE=$(mktemp)
+trap 'rm -f "$TMPFILE" "$SP1_FILE" "$SP2_FILE" "$SP3_FILE" "$SYNTH_FILE"; rm -rf "$WORK_DIR"' EXIT
 
-printf '%s' "$OPTIMIZED_PROMPT" > "$PROMPT_FILE"
-printf '%s' "You are a Staff Mobile Engineer with 20 years of experience. You have shipped apps with 50M+ downloads on both iOS and Android. Deep expertise in: React Native (performance optimization, bridge architecture, native modules), Flutter (Dart, widget lifecycle, platform channels), iOS (Swift, SwiftUI, UIKit, Core Data, push notifications, App Store guidelines), Android (Kotlin, Jetpack Compose, Room, WorkManager). You understand mobile-specific constraints: battery life, network conditions (2G to 5G), memory limits, app startup time, crash-free rate, ANR prevention. You always think about offline-first architecture, proper state restoration, and deep linking." > "$SYSPROMPT_FILE"
+printf '%s' 'You are a Senior Mobile UX Architect with 18 years building apps at Uber and Airbnb. Design the mobile solution architecture: screen/navigation flow (describe each screen), component hierarchy, state management approach, offline strategy (what works offline, what requires network), platform adaptations (iOS vs Android differences). NO implementation code — produce a clear mobile design spec.' > "$SP1_FILE"
 
-echo "  🤖 [$TEAM/lead] Running agent (primary: $PRIMARY_MODEL)..." >&2
-RESULT=$(run_with_fallback "$PROMPT_FILE" "$SYSPROMPT_FILE" \
-    "$PRIMARY_MODEL" "$FALLBACK1_MODEL" "$FALLBACK2_MODEL")
-EXIT_CODE=$?
+printf '%s' 'You are a Senior Mobile Engineer with 15 years experience and apps with 50M+ downloads. Write complete, production-ready mobile code. Requirements: no memory leaks (remove all listeners in cleanup/onDestroy/useEffect cleanup), handle all network states (loading/error/offline/timeout), request permissions correctly (check before use, handle denial gracefully), use platform conventions (HIG for iOS, Material for Android). Complete, copy-paste ready code.' > "$SP2_FILE"
 
-if [ $EXIT_CODE -ne 0 ] || [ -z "$RESULT" ]; then
-    log_action "$TEAM" "lead" "$PRIMARY_MODEL" "FAILED" "$TASK_SUMMARY" "$RAW_TASK" ""
-    echo "❌ [$TEAM/lead] All models failed" >&2
-    exit 1
-fi
+printf '%s' 'You are a Mobile QA Engineer specializing in performance and platform compliance. Review for: memory leaks (unreleased listeners, retained contexts), main thread blocking (network/DB on UI thread), FlatList/RecyclerView performance (missing keyExtractor, no getItemLayout), missing accessibility support (contentDescription, accessibilityLabel), App Store/Play Store guideline violations, missing permission rationale. Format: [SEVERITY] | Issue | Platform | Fix.' > "$SP3_FILE"
 
-LEARNING="$(date '+%Y-%m-%d'): ${TASK_SUMMARY:0:80}"
-memory_append "$TEAM" "$LEARNING"
+printf '%s' 'You are the Mobile Team Lead. Combine: Mobile Architecture Design, Implementation Code, and Platform Review. Deliver: (1) Architecture overview with navigation flow, (2) Complete mobile code with all reviewer fixes applied, (3) Platform-specific notes (iOS vs Android differences), (4) App Store submission checklist. Fix all CRITICAL/HIGH reviewer findings.' > "$SYNTH_FILE"
 
-log_action "$TEAM" "lead" "$PRIMARY_MODEL" "SUCCESS" "$TASK_SUMMARY" "$OPTIMIZED_PROMPT" "$RESULT"
-echo "  ✅ [$TEAM/lead] Done" >&2
+{
+  SYSTEM_PROMPT="$(cat "$SP1_FILE")" "$AGENTS2_DIR/call_model.sh" "$AGENT1_MODEL" < "$WORK_DIR/p1.txt" > "$WORK_DIR/r1.txt" 2>/dev/null \
+    || printf '[%s/%s failed]' "$TEAM" "$ROLE1_NAME" > "$WORK_DIR/r1.txt"
+} &
+{
+  SYSTEM_PROMPT="$(cat "$SP2_FILE")" "$AGENTS2_DIR/call_model.sh" "$AGENT2_MODEL" < "$WORK_DIR/p2.txt" > "$WORK_DIR/r2.txt" 2>/dev/null \
+    || printf '[%s/%s failed]' "$TEAM" "$ROLE2_NAME" > "$WORK_DIR/r2.txt"
+} &
+{
+  SYSTEM_PROMPT="$(cat "$SP3_FILE")" "$AGENTS2_DIR/call_model.sh" "$AGENT3_MODEL" < "$WORK_DIR/p3.txt" > "$WORK_DIR/r3.txt" 2>/dev/null \
+    || printf '[%s/%s failed]' "$TEAM" "$ROLE3_NAME" > "$WORK_DIR/r3.txt"
+} &
+wait
 
+echo "  ✅ [$TEAM] Agents done, synthesizing..." >&2
+
+COMBINED="## [$ROLE1_NAME — $AGENT1_MODEL]
+$(cat "$WORK_DIR/r1.txt")
+
+## [$ROLE2_NAME — $AGENT2_MODEL]
+$(cat "$WORK_DIR/r2.txt")
+
+## [$ROLE3_NAME — $AGENT3_MODEL]
+$(cat "$WORK_DIR/r3.txt")"
+
+RESULT=$(printf '%s' "$COMBINED" | SYSTEM_PROMPT="$(cat "$SYNTH_FILE")" "$AGENTS2_DIR/call_model.sh" "openai/gpt-4o" 2>/dev/null) || RESULT="$COMBINED"
+[ -z "$RESULT" ] && RESULT="$COMBINED"
+
+memory_append "$TEAM" "$(date '+%Y-%m-%d'): ${TASK_SUMMARY:0:80}"
+log_action "$TEAM" "lead" "3-parallel" "SUCCESS" "$TASK_SUMMARY" "$RAW_TASK" "$RESULT"
+
+RESULT="${RESULT}
+---
+## 🔍 [$TEAM Team] Self-Assessment
+Specialists: Designer(gpt-4o-mini) + Coder(deepseek) + Reviewer(gemini-flash)
+Additional teams that could add value:
+- backend: API design for mobile consumption (response size, offline sync strategy)
+- security: mobile-specific security (certificate pinning, jailbreak detection, secure storage)
+- qa: automated mobile testing (Detox, XCUITest, Espresso)"
+
+echo "  ✅ [$TEAM] Done" >&2
 echo "$RESULT"

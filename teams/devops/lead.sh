@@ -1,33 +1,21 @@
 #!/usr/bin/env bash
-# teams/devops/lead.sh — DevOps Team Lead
-# Orchestrates the devops team: optimizes prompt → tries models → updates memory → returns result
-
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENTS2_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
-# Load .env if present
-ENV_FILE="${AGENTS2_DIR}/.env"
-if [[ -f "$ENV_FILE" ]]; then
-    set -a; source "$ENV_FILE"; set +a
-fi
-
 source "$AGENTS2_DIR/lib/logger.sh"
 source "$AGENTS2_DIR/lib/memory.sh"
-source "$AGENTS2_DIR/lib/fallback.sh"
 
 TEAM="devops"
-PRIMARY_MODEL="openai/gpt-4o-mini"
-FALLBACK1_MODEL="deepseek/deepseek-chat"
-FALLBACK2_MODEL="google/gemini-2.0-flash-001"
+ROLE1_NAME="designer"
+ROLE2_NAME="implementer"
+ROLE3_NAME="reviewer"
+AGENT1_MODEL="openai/gpt-4o-mini"
+AGENT2_MODEL="deepseek/deepseek-chat"
+AGENT3_MODEL="google/gemini-2.0-flash-001"
 
-# ── System prompt ──────────────────────────────────────────────────────────────
-TEAM_SYSTEM_PROMPT="You are a Staff DevOps and Platform Engineer with 24 years of experience. You have built and maintained CI/CD pipelines and infrastructure for platforms serving billions of requests. Deep expertise in: Docker and Kubernetes (production-grade, security-hardened), GitHub Actions and GitLab CI/CD, Terraform and Infrastructure as Code, AWS/GCP/Azure services, monitoring and observability (Prometheus, Grafana, ELK stack, Datadog), secret management (Vault, AWS Secrets Manager), zero-downtime deployments, blue-green and canary strategies. You think about reliability, cost, and security in every infrastructure decision. You never hardcode credentials. You always think about rollback strategies."
-
-# ── Read input ─────────────────────────────────────────────────────────────────
 TMPFILE=$(mktemp)
-trap 'rm -f "$TMPFILE"' EXIT
+WORK_DIR=$(mktemp -d)
+trap 'rm -f "$TMPFILE"; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -t 0 ]; then
     { [ -n "${1:-}" ] && printf '%s\n\n' "$1"; cat; } > "$TMPFILE"
@@ -39,45 +27,74 @@ fi
 
 RAW_TASK=$(cat "$TMPFILE")
 TASK_SUMMARY="${RAW_TASK:0:120}"
+log_action "$TEAM" "lead" "3-parallel" "RUNNING" "$TASK_SUMMARY" "$RAW_TASK"
+echo "🔧 [$TEAM] Starting: ${TASK_SUMMARY:0:60}..." >&2
 
-log_action "$TEAM" "lead" "$PRIMARY_MODEL" "RUNNING" "$TASK_SUMMARY" "$RAW_TASK"
-echo "🔧 [$TEAM/lead] Starting: ${TASK_SUMMARY:0:70}..." >&2
+# Phase 1: 3 PE calls in parallel
+echo "  📝 [$TEAM] Team PE optimizing for $ROLE1_NAME + $ROLE2_NAME + $ROLE3_NAME..." >&2
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE1_NAME" > "$WORK_DIR/p1.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p1.txt"; } &
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE2_NAME" > "$WORK_DIR/p2.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p2.txt"; } &
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE3_NAME" > "$WORK_DIR/p3.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p3.txt"; } &
+wait
+echo "  ✅ [$TEAM] Prompts ready" >&2
 
-# ── Read team memory ───────────────────────────────────────────────────────────
-TEAM_MEMORY=$(memory_read "$TEAM")
+# Phase 2: 3 agents in parallel
+echo "  🤖 [$TEAM] $ROLE1_NAME($AGENT1_MODEL) + $ROLE2_NAME($AGENT2_MODEL) + $ROLE3_NAME($AGENT3_MODEL)..." >&2
 
-# ── Optimize prompt ────────────────────────────────────────────────────────────
-echo "  📝 [$TEAM/lead] Optimizing prompt..." >&2
-OPTIMIZED_PROMPT=$(echo "$RAW_TASK" | \
-    TEAM_MEMORY="$TEAM_MEMORY" \
-    "$AGENTS2_DIR/lib/prompt_engineer.sh" "$TEAM" 2>/dev/null || echo "$RAW_TASK")
+AGENT1_SYSPROMPT='You are a Staff Platform Engineer with 24 years of experience building infrastructure for Netflix (100M+ users) and Meta. Your role: design the infrastructure architecture ONLY. Produce: service diagram (ASCII), environment strategy, secrets management plan, monitoring/alerting design, scaling approach, DR strategy. No implementation files — produce a clear infrastructure design doc.'
 
-PROMPT_FILE=$(mktemp)
-SYSPROMPT_FILE=$(mktemp)
-trap 'rm -f "$TMPFILE" "$PROMPT_FILE" "$SYSPROMPT_FILE"' EXIT
+AGENT2_SYSPROMPT='You are a Senior DevOps Engineer with 18 years of experience. Implement complete, production-ready infrastructure. Requirements: Docker images use non-root users and pinned versions, CI/CD includes test gates before deploy, Kubernetes configs include resource limits and probes, no secrets in code or configs, rollback strategy defined. Deliver complete, working configuration files.'
 
-printf '%s' "$OPTIMIZED_PROMPT" > "$PROMPT_FILE"
-printf '%s' "$TEAM_SYSTEM_PROMPT" > "$SYSPROMPT_FILE"
+AGENT3_SYSPROMPT='You are a DevOps Security Auditor. Review the infrastructure for: secrets exposure (grep for passwords/keys/tokens in configs), over-privileged containers (root user, SYS_ADMIN), missing network segmentation, SPOFs (no redundancy), inadequate monitoring gaps, blast radius of failures. Each finding: [CRITICAL/HIGH/MEDIUM/LOW] | Issue | Location | Risk | Fix.'
 
-# ── Run with fallback ──────────────────────────────────────────────────────────
-echo "  🤖 [$TEAM/lead] Running agent (primary: $PRIMARY_MODEL)..." >&2
-RESULT=$(run_with_fallback "$PROMPT_FILE" "$SYSPROMPT_FILE" \
-    "$PRIMARY_MODEL" "$FALLBACK1_MODEL" "$FALLBACK2_MODEL") || true
-EXIT_CODE=${PIPESTATUS[0]:-$?}
+SYNTH_SYSPROMPT='You are the DevOps Team Lead. Combine Infrastructure Design, Implementation, and Security Review. Produce: (1) Infrastructure architecture summary, (2) Complete configuration files with security fixes applied, (3) Deployment checklist (ordered steps), (4) Monitoring setup guide. Fix all CRITICAL and HIGH findings before delivering.'
 
-if [ "${EXIT_CODE:-0}" -ne 0 ] || [ -z "${RESULT:-}" ]; then
-    log_action "$TEAM" "lead" "$PRIMARY_MODEL" "FAILED" "$TASK_SUMMARY" "$RAW_TASK" ""
-    echo "❌ [$TEAM/lead] All models failed" >&2
-    exit 1
-fi
+{
+SYSTEM_PROMPT="$AGENT1_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "$AGENT1_MODEL" < "$WORK_DIR/p1.txt" > "$WORK_DIR/r1.txt" 2>/dev/null \
+    || printf '[%s/%s failed]\n' "$TEAM" "$ROLE1_NAME" > "$WORK_DIR/r1.txt"
+} &
+{
+SYSTEM_PROMPT="$AGENT2_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "$AGENT2_MODEL" < "$WORK_DIR/p2.txt" > "$WORK_DIR/r2.txt" 2>/dev/null \
+    || printf '[%s/%s failed]\n' "$TEAM" "$ROLE2_NAME" > "$WORK_DIR/r2.txt"
+} &
+{
+SYSTEM_PROMPT="$AGENT3_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "$AGENT3_MODEL" < "$WORK_DIR/p3.txt" > "$WORK_DIR/r3.txt" 2>/dev/null \
+    || printf '[%s/%s failed]\n' "$TEAM" "$ROLE3_NAME" > "$WORK_DIR/r3.txt"
+} &
+wait
+echo "  ✅ [$TEAM] All 3 done" >&2
 
-# ── Update memory ──────────────────────────────────────────────────────────────
-LEARNING="$(date '+%Y-%m-%d'): ${TASK_SUMMARY:0:80}"
-memory_append "$TEAM" "$LEARNING"
+# Phase 3: Team synthesis
+COMBINED="## [$ROLE1_NAME — $AGENT1_MODEL]
+$(cat "$WORK_DIR/r1.txt")
 
-# ── Log success ───────────────────────────────────────────────────────────────
-log_action "$TEAM" "lead" "${FALLBACK_USED_MODEL:-$PRIMARY_MODEL}" "SUCCESS" \
-    "$TASK_SUMMARY" "$OPTIMIZED_PROMPT" "$RESULT"
-echo "  ✅ [$TEAM/lead] Done (model: ${FALLBACK_USED_MODEL:-$PRIMARY_MODEL}, attempts: ${FALLBACK_ATTEMPTS:-1})" >&2
+## [$ROLE2_NAME — $AGENT2_MODEL]
+$(cat "$WORK_DIR/r2.txt")
 
+## [$ROLE3_NAME — $AGENT3_MODEL]
+$(cat "$WORK_DIR/r3.txt")"
+
+echo "  🔗 [$TEAM] Synthesizing..." >&2
+RESULT=$(printf '%s' "$COMBINED" | \
+SYSTEM_PROMPT="$SYNTH_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "openai/gpt-4o" 2>/dev/null) || RESULT="$COMBINED"
+
+[ -z "$RESULT" ] && RESULT="$COMBINED"
+
+memory_append "$TEAM" "$(date '+%Y-%m-%d'): ${TASK_SUMMARY:0:80}"
+log_action "$TEAM" "lead" "3-parallel" "SUCCESS" "$TASK_SUMMARY" "$RAW_TASK" "$RESULT"
+
+RESULT="${RESULT}
+---
+## 🔍 [$TEAM Team] Self-Assessment
+Specialists: Designer(gpt-4o-mini) + Implementer(deepseek) + Reviewer(gemini-flash)
+Additional teams:
+- security: application-level security audit beyond infrastructure
+- backend: application configuration and environment variables
+- data: database backup and migration strategy"
+
+echo "  ✅ [$TEAM] Done" >&2
 echo "$RESULT"

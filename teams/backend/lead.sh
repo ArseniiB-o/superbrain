@@ -1,33 +1,21 @@
 #!/usr/bin/env bash
-# teams/backend/lead.sh — Backend Team Lead
-# Orchestrates the backend team: optimizes prompt → tries models → updates memory → returns result
-
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENTS2_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
-# Load .env if present
-ENV_FILE="${AGENTS2_DIR}/.env"
-if [[ -f "$ENV_FILE" ]]; then
-    set -a; source "$ENV_FILE"; set +a
-fi
-
 source "$AGENTS2_DIR/lib/logger.sh"
 source "$AGENTS2_DIR/lib/memory.sh"
-source "$AGENTS2_DIR/lib/fallback.sh"
 
 TEAM="backend"
-PRIMARY_MODEL="deepseek/deepseek-chat"
-FALLBACK1_MODEL="openai/gpt-4o-mini"
-FALLBACK2_MODEL="google/gemini-2.0-flash-001"
+ROLE1_NAME="architect"
+ROLE2_NAME="coder"
+ROLE3_NAME="reviewer"
+AGENT1_MODEL="deepseek/deepseek-chat"
+AGENT2_MODEL="openai/gpt-4o-mini"
+AGENT3_MODEL="google/gemini-2.0-flash-001"
 
-# ── System prompt ──────────────────────────────────────────────────────────────
-TEAM_SYSTEM_PROMPT="You are a Staff Backend Engineer with 28 years of experience designing and scaling distributed systems at Google, Amazon, and multiple funded startups. You have shipped production systems serving 100M+ users. Your expertise spans: RESTful and GraphQL API design, microservices and monolith architecture, SQL (PostgreSQL, MySQL) and NoSQL (MongoDB, Redis) at scale, message queues (Kafka, RabbitMQ), authentication/authorization (OAuth 2.0, JWT, RBAC), caching strategies, and database optimization. You write clean, SOLID code with proper error handling, logging, and observability. You never ship without considering rate limiting, input validation, and proper HTTP status codes. Security is always your second thought (after correctness)."
-
-# ── Read input ─────────────────────────────────────────────────────────────────
 TMPFILE=$(mktemp)
-trap 'rm -f "$TMPFILE"' EXIT
+WORK_DIR=$(mktemp -d)
+trap 'rm -f "$TMPFILE"; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -t 0 ]; then
     { [ -n "${1:-}" ] && printf '%s\n\n' "$1"; cat; } > "$TMPFILE"
@@ -39,45 +27,75 @@ fi
 
 RAW_TASK=$(cat "$TMPFILE")
 TASK_SUMMARY="${RAW_TASK:0:120}"
+log_action "$TEAM" "lead" "3-parallel" "RUNNING" "$TASK_SUMMARY" "$RAW_TASK"
+echo "🔧 [$TEAM] Starting: ${TASK_SUMMARY:0:60}..." >&2
 
-log_action "$TEAM" "lead" "$PRIMARY_MODEL" "RUNNING" "$TASK_SUMMARY" "$RAW_TASK"
-echo "🔧 [$TEAM/lead] Starting: ${TASK_SUMMARY:0:70}..." >&2
+# Phase 1: 3 PE calls in parallel
+echo "  📝 [$TEAM] Team PE optimizing for $ROLE1_NAME + $ROLE2_NAME + $ROLE3_NAME..." >&2
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE1_NAME" > "$WORK_DIR/p1.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p1.txt"; } &
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE2_NAME" > "$WORK_DIR/p2.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p2.txt"; } &
+{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE3_NAME" > "$WORK_DIR/p3.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p3.txt"; } &
+wait
+echo "  ✅ [$TEAM] Prompts ready" >&2
 
-# ── Read team memory ───────────────────────────────────────────────────────────
-TEAM_MEMORY=$(memory_read "$TEAM")
+# Phase 2: 3 agents in parallel
+echo "  🤖 [$TEAM] $ROLE1_NAME($AGENT1_MODEL) + $ROLE2_NAME($AGENT2_MODEL) + $ROLE3_NAME($AGENT3_MODEL)..." >&2
 
-# ── Optimize prompt ────────────────────────────────────────────────────────────
-echo "  📝 [$TEAM/lead] Optimizing prompt..." >&2
-OPTIMIZED_PROMPT=$(echo "$RAW_TASK" | \
-    TEAM_MEMORY="$TEAM_MEMORY" \
-    "$AGENTS2_DIR/lib/prompt_engineer.sh" "$TEAM" 2>/dev/null || echo "$RAW_TASK")
+AGENT1_SYSPROMPT='You are a Staff Backend Engineer with 28 years of experience at Google and Amazon Web Services. Your role in this task: produce the solution architecture ONLY — no implementation code. Deliver: complete API contract (endpoint table with method/path/request/response/codes), data model (ERD-style description), service layer design, authentication strategy, rate limiting design, error handling approach. Be specific and complete.'
 
-PROMPT_FILE=$(mktemp)
-SYSPROMPT_FILE=$(mktemp)
-trap 'rm -f "$TMPFILE" "$PROMPT_FILE" "$SYSPROMPT_FILE"' EXIT
+AGENT2_SYSPROMPT='You are a Senior Backend Engineer with 15 years experience. Implement the backend solution completely. Requirements: full input validation on all user-facing fields, parameterized queries (never concatenate user input into SQL), proper HTTP status codes, RFC 7807 error format, transaction management for multi-step operations, structured logging (no sensitive data in logs). Deliver complete, runnable code.'
 
-printf '%s' "$OPTIMIZED_PROMPT" > "$PROMPT_FILE"
-printf '%s' "$TEAM_SYSTEM_PROMPT" > "$SYSPROMPT_FILE"
+AGENT3_SYSPROMPT='You are a Backend Security and Performance Reviewer (OWASP Top 10 specialist). Review the task/code and find: injection vulnerabilities (SQL, NoSQL, command), broken authentication, missing authorization checks, sensitive data exposure, N+1 queries, missing indexes, race conditions. Each finding: [CRITICAL/HIGH/MEDIUM/LOW] | Vulnerability Type | Location | Exploit Scenario | Specific Fix.'
 
-# ── Run with fallback ──────────────────────────────────────────────────────────
-echo "  🤖 [$TEAM/lead] Running agent (primary: $PRIMARY_MODEL)..." >&2
-RESULT=$(run_with_fallback "$PROMPT_FILE" "$SYSPROMPT_FILE" \
-    "$PRIMARY_MODEL" "$FALLBACK1_MODEL" "$FALLBACK2_MODEL") || true
-EXIT_CODE=${PIPESTATUS[0]:-$?}
+SYNTH_SYSPROMPT='You are the Backend Team Lead integrating Architecture Design, Implementation Code, and Security Review. Produce: (1) Architecture summary (from Architect), (2) Complete implementation with all security fixes applied (from Coder + Reviewer corrections), (3) Security findings summary. CRITICAL and HIGH findings MUST be fixed in the code — do not just list them.'
 
-if [ "${EXIT_CODE:-0}" -ne 0 ] || [ -z "${RESULT:-}" ]; then
-    log_action "$TEAM" "lead" "$PRIMARY_MODEL" "FAILED" "$TASK_SUMMARY" "$RAW_TASK" ""
-    echo "❌ [$TEAM/lead] All models failed" >&2
-    exit 1
-fi
+{
+SYSTEM_PROMPT="$AGENT1_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "$AGENT1_MODEL" < "$WORK_DIR/p1.txt" > "$WORK_DIR/r1.txt" 2>/dev/null \
+    || printf '[%s/%s failed]\n' "$TEAM" "$ROLE1_NAME" > "$WORK_DIR/r1.txt"
+} &
+{
+SYSTEM_PROMPT="$AGENT2_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "$AGENT2_MODEL" < "$WORK_DIR/p2.txt" > "$WORK_DIR/r2.txt" 2>/dev/null \
+    || printf '[%s/%s failed]\n' "$TEAM" "$ROLE2_NAME" > "$WORK_DIR/r2.txt"
+} &
+{
+SYSTEM_PROMPT="$AGENT3_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "$AGENT3_MODEL" < "$WORK_DIR/p3.txt" > "$WORK_DIR/r3.txt" 2>/dev/null \
+    || printf '[%s/%s failed]\n' "$TEAM" "$ROLE3_NAME" > "$WORK_DIR/r3.txt"
+} &
+wait
+echo "  ✅ [$TEAM] All 3 done" >&2
 
-# ── Update memory ──────────────────────────────────────────────────────────────
-LEARNING="$(date '+%Y-%m-%d'): ${TASK_SUMMARY:0:80}"
-memory_append "$TEAM" "$LEARNING"
+# Phase 3: Team synthesis
+COMBINED="## [$ROLE1_NAME — $AGENT1_MODEL]
+$(cat "$WORK_DIR/r1.txt")
 
-# ── Log success ───────────────────────────────────────────────────────────────
-log_action "$TEAM" "lead" "${FALLBACK_USED_MODEL:-$PRIMARY_MODEL}" "SUCCESS" \
-    "$TASK_SUMMARY" "$OPTIMIZED_PROMPT" "$RESULT"
-echo "  ✅ [$TEAM/lead] Done (model: ${FALLBACK_USED_MODEL:-$PRIMARY_MODEL}, attempts: ${FALLBACK_ATTEMPTS:-1})" >&2
+## [$ROLE2_NAME — $AGENT2_MODEL]
+$(cat "$WORK_DIR/r2.txt")
 
+## [$ROLE3_NAME — $AGENT3_MODEL]
+$(cat "$WORK_DIR/r3.txt")"
+
+echo "  🔗 [$TEAM] Synthesizing..." >&2
+RESULT=$(printf '%s' "$COMBINED" | \
+SYSTEM_PROMPT="$SYNTH_SYSPROMPT" \
+"$AGENTS2_DIR/call_model.sh" "openai/gpt-4o" 2>/dev/null) || RESULT="$COMBINED"
+
+[ -z "$RESULT" ] && RESULT="$COMBINED"
+
+memory_append "$TEAM" "$(date '+%Y-%m-%d'): ${TASK_SUMMARY:0:80}"
+log_action "$TEAM" "lead" "3-parallel" "SUCCESS" "$TASK_SUMMARY" "$RAW_TASK" "$RESULT"
+
+RESULT="${RESULT}
+---
+## 🔍 [$TEAM Team] Self-Assessment
+Specialists: Architect(deepseek) + Coder(gpt-4o-mini) + Reviewer(gemini-flash)
+Additional teams:
+- security: full OWASP penetration testing beyond code review
+- data: complex database schema optimization and query tuning
+- devops: containerization, CI/CD pipeline, environment configuration
+- qa: integration tests, load testing strategy"
+
+echo "  ✅ [$TEAM] Done" >&2
 echo "$RESULT"
