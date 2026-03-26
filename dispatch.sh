@@ -123,6 +123,106 @@ if [[ "$FLAG_NEW_PROJECT" -eq 1 ]]; then
             } > "${WORK_DIR}/task_with_plan.txt"
             cp "${WORK_DIR}/task_with_plan.txt" "$TASK_FILE"
         fi
+
+        # ── Create project folder structure ────────────────────────────────────────────
+        PROJECT_NAME=$(echo "$TASK" | \
+            "$SCRIPT_DIR/call_model.sh" "openai/gpt-4o-mini" 2>/dev/null <<< \
+            "Extract a short project name (2-4 words, kebab-case) from this task: $TASK. Return ONLY the name, nothing else." || \
+            echo "new-project-$(date +%Y%m%d)")
+        PROJECT_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | head -c 40)
+        PROJECT_DIR="$HOME/$PROJECT_NAME"
+
+        echo "📁 [dispatch] Creating project folder: $PROJECT_DIR" >&2
+        mkdir -p "$PROJECT_DIR"/{docs,business,technical,legal,marketing,research}
+
+        # Generate project documents using writer team
+        BRIEF="${DIRECTOR_OUTPUT:-$TASK}"
+
+        for DOC_TASK in \
+            "Write a complete README.md for this project. Include: project overview, problem statement, solution, key features, tech stack, getting started.:$PROJECT_DIR/README.md" \
+            "Write docs/01_OVERVIEW.md — comprehensive project overview with vision, mission, target users, value proposition, and success metrics.:$PROJECT_DIR/docs/01_OVERVIEW.md" \
+            "Write docs/02_REQUIREMENTS.md — detailed functional and non-functional requirements, user stories, acceptance criteria.:$PROJECT_DIR/docs/02_REQUIREMENTS.md" \
+            "Write docs/03_TIMELINE.md — realistic project timeline with phases, milestones, dependencies, and risks.:$PROJECT_DIR/docs/03_TIMELINE.md" \
+            "Write technical/04_ARCHITECTURE.md — system architecture, tech stack decisions with justification, component diagram (ASCII), data flow.:$PROJECT_DIR/technical/04_ARCHITECTURE.md" \
+            "Write business/05_BUSINESS_PLAN.md — business model, revenue streams, unit economics (CAC/LTV), market size, competitive analysis.:$PROJECT_DIR/business/05_BUSINESS_PLAN.md" \
+            "Write legal/06_COMPLIANCE.md — legal requirements, GDPR compliance checklist, licenses needed, regulatory considerations for EU.:$PROJECT_DIR/legal/06_COMPLIANCE.md" \
+            "Write marketing/07_GTM.md — go-to-market strategy, target customer segments, acquisition channels, messaging framework.:$PROJECT_DIR/marketing/07_GTM.md" \
+            "Write research/08_MARKET_RESEARCH.md — market analysis with real statistics, competitor landscape, industry trends, comparable cases.:$PROJECT_DIR/research/08_MARKET_RESEARCH.md" \
+            "Write docs/09_RISKS.md — comprehensive risk register with probability/impact scores, mitigation strategies, contingency plans.:$PROJECT_DIR/docs/09_RISKS.md"
+        do
+            DOC_TASK_TEXT="${DOC_TASK%%:*}"
+            DOC_FILE="${DOC_TASK##*:}"
+
+            echo "  📄 Creating: $(basename "$DOC_FILE")..." >&2
+
+            FULL_DOC_TASK="Project context:
+$BRIEF
+
+Task: $DOC_TASK_TEXT"
+
+            bash "$SCRIPT_DIR/teams/writer/lead.sh" "$FULL_DOC_TASK" > "$DOC_FILE" 2>/dev/null || \
+                printf '# %s\n\n[Generation failed — fill in manually]\n' "$(basename "$DOC_FILE")" > "$DOC_FILE"
+        done
+
+        echo "✅ [dispatch] Project folder created: $PROJECT_DIR" >&2
+        echo "" >&2
+        echo "📁 Project files created:" >&2
+        find "$PROJECT_DIR" -name "*.md" | sort | while read -r f; do
+            echo "   - $f" >&2
+        done
+        echo "" >&2
+    fi
+fi
+
+# ── 0. Global Primary Prompt Engineer ─────────────────────────────────────────
+# Process user's raw prompt into a structured, clear task description
+# before routing to teams. This improves decomposition quality.
+
+if [ "${SKIP_PE:-0}" != "1" ] && [ "${NO_PE:-0}" != "1" ] && [ "$FLAG_NO_PE" -eq 0 ]; then
+    echo "✨ [dispatch] Running primary prompt engineer..." >&2
+
+    GLOBAL_PE_SYSTEM='You are the Master Dispatch Prompt Engineer for a multi-team AI system.
+Your job: Transform the user raw request into a perfectly clear, structured task specification.
+
+OUTPUT FORMAT:
+## TASK OVERVIEW
+[One paragraph: what needs to be done, why, for whom]
+
+## EXPLICIT REQUIREMENTS
+- [Specific requirement 1]
+- [Specific requirement 2]
+...
+
+## CONSTRAINTS & CONTEXT
+- [Technical constraint / stack / environment if mentioned]
+- [Business constraint if mentioned]
+- [Timeline if mentioned]
+
+## SUCCESS CRITERIA
+- [How we know this task is done well]
+- [What output is expected]
+
+## SCOPE BOUNDARIES
+- IN SCOPE: [what should be addressed]
+- OUT OF SCOPE: [what should NOT be addressed, if clear]
+
+RULES: Be specific. If user input is vague, make reasonable assumptions and state them.
+Do NOT add requirements not implied by user input. Return ONLY the structured task.'
+
+    ENHANCED_TASK=$(echo "$TASK" | \
+        SYSTEM_PROMPT="$GLOBAL_PE_SYSTEM" \
+        "$SCRIPT_DIR/call_model.sh" "openai/gpt-4o" 2>/dev/null || echo "$TASK")
+
+    if [ -n "$ENHANCED_TASK" ] && ! echo "$ENHANCED_TASK" | grep -qi "^Error\|^API Error"; then
+        echo "  ✅ [dispatch] Prompt enhanced" >&2
+        # Prepend original task for context
+        TASK="$ENHANCED_TASK
+
+---
+ORIGINAL USER REQUEST: $TASK"
+        printf '%s' "$TASK" > "$TASK_FILE"
+    else
+        echo "  ⚠️  [dispatch] PE failed, using original prompt" >&2
     fi
 fi
 
@@ -144,6 +244,11 @@ Teams available:
 - strategy   : business strategy, GTM, positioning, roadmap, competitive advantage
 - writer     : copywriting, documentation, reports, blog posts, emails, content
 - planner    : project planning, sprint planning, decomposition, timelines, task management
+- marketing  : TAM/SAM/SOM analysis, acquisition channels, brand positioning, growth metrics, customer personas
+- legal      : GDPR, EU AI Act, compliance, contracts, IP law, regulatory requirements, licensing
+- risk       : risk register, probability/impact matrix, mitigation strategies, business continuity
+- finance    : financial modeling, unit economics, CAC/LTV, burn rate, pricing strategy, fundraising
+- researcher : market research with real sources, statistics, case studies, competitor intelligence
 
 Rules:
 1. Pick 2-5 most relevant teams. Each subtask must be self-contained and independent.
