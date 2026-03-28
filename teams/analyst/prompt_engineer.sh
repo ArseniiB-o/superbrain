@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENTS2_DIR="$SCRIPT_DIR/../.."
+AGENTS2_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CALL_MODEL="${AGENTS2_DIR}/call_model.sh"
 ENV_FILE="${AGENTS2_DIR}/.env"
 LOGS_DIR="${AGENTS2_DIR}/logs"

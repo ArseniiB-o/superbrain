@@ -2,5 +2,6 @@
 *.env
 logs/
 *.log
+.cache/
 .DS_Store
 Thumbs.db

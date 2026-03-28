@@ -9,88 +9,24 @@ TEAM="mobile"
 ROLE1_NAME="designer"
 ROLE2_NAME="coder"
 ROLE3_NAME="reviewer"
-AGENT1_MODEL="openai/gpt-4o-mini"
-AGENT2_MODEL="deepseek/deepseek-chat"
-AGENT3_MODEL="google/gemini-2.0-flash-001"
 
-TMPFILE=$(mktemp)
-WORK_DIR=$(mktemp -d)
-trap 'rm -f "$TMPFILE"; rm -rf "$WORK_DIR"' EXIT
+# Models are read from config.json by team_runner.sh
+# Uncomment to override: AGENT1_MODEL="openai/gpt-4o-mini"
+# Uncomment to override: AGENT2_MODEL="deepseek/deepseek-chat"
+# Uncomment to override: AGENT3_MODEL="google/gemini-2.0-flash-001"
 
-if [ ! -t 0 ]; then
-  { [ -n "${1:-}" ] && printf '%s\n\n' "$1"; cat; } > "$TMPFILE"
-elif [ -n "${1:-}" ]; then
-  printf '%s' "$1" > "$TMPFILE"
-else
-  echo "Error: provide task via argument or stdin" >&2; exit 1
-fi
+AGENT1_SYSPROMPT='You are a Senior Mobile UX Architect with 18 years building apps at Uber and Airbnb. Design the mobile solution architecture: screen/navigation flow (describe each screen), component hierarchy, state management approach, offline strategy (what works offline, what requires network), platform adaptations (iOS vs Android differences). NO implementation code — produce a clear mobile design spec.'
 
-RAW_TASK=$(cat "$TMPFILE")
-TASK_SUMMARY="${RAW_TASK:0:120}"
+AGENT2_SYSPROMPT='You are a Senior Mobile Engineer with 15 years experience and apps with 50M+ downloads. Write complete, production-ready mobile code. Requirements: no memory leaks (remove all listeners in cleanup/onDestroy/useEffect cleanup), handle all network states (loading/error/offline/timeout), request permissions correctly (check before use, handle denial gracefully), use platform conventions (HIG for iOS, Material for Android). Complete, copy-paste ready code.'
 
-log_action "$TEAM" "lead" "3-parallel" "RUNNING" "$TASK_SUMMARY" "$RAW_TASK"
-echo "🔧 [$TEAM] Starting 3-parallel: ${TASK_SUMMARY:0:60}..." >&2
+AGENT3_SYSPROMPT='You are a Mobile QA Engineer specializing in performance and platform compliance. Review for: memory leaks (unreleased listeners, retained contexts), main thread blocking (network/DB on UI thread), FlatList/RecyclerView performance (missing keyExtractor, no getItemLayout), missing accessibility support (contentDescription, accessibilityLabel), App Store/Play Store guideline violations, missing permission rationale. Format: [SEVERITY] | Issue | Platform | Fix.'
 
-{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE1_NAME" > "$WORK_DIR/p1.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p1.txt"; } &
-{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE2_NAME" > "$WORK_DIR/p2.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p2.txt"; } &
-{ echo "$RAW_TASK" | bash "$SCRIPT_DIR/prompt_engineer.sh" "$ROLE3_NAME" > "$WORK_DIR/p3.txt" 2>/dev/null || cp "$TMPFILE" "$WORK_DIR/p3.txt"; } &
-wait
+SYNTH_SYSPROMPT='You are the Mobile Team Lead. Combine: Mobile Architecture Design, Implementation Code, and Platform Review. Deliver: (1) Architecture overview with navigation flow, (2) Complete mobile code with all reviewer fixes applied, (3) Platform-specific notes (iOS vs Android differences), (4) App Store submission checklist. Fix all CRITICAL/HIGH reviewer findings.'
 
-echo "  🤖 [$TEAM] $ROLE1_NAME+$ROLE2_NAME+$ROLE3_NAME running..." >&2
-
-SP1_FILE=$(mktemp)
-SP2_FILE=$(mktemp)
-SP3_FILE=$(mktemp)
-SYNTH_FILE=$(mktemp)
-trap 'rm -f "$TMPFILE" "$SP1_FILE" "$SP2_FILE" "$SP3_FILE" "$SYNTH_FILE"; rm -rf "$WORK_DIR"' EXIT
-
-printf '%s' 'You are a Senior Mobile UX Architect with 18 years building apps at Uber and Airbnb. Design the mobile solution architecture: screen/navigation flow (describe each screen), component hierarchy, state management approach, offline strategy (what works offline, what requires network), platform adaptations (iOS vs Android differences). NO implementation code — produce a clear mobile design spec.' > "$SP1_FILE"
-
-printf '%s' 'You are a Senior Mobile Engineer with 15 years experience and apps with 50M+ downloads. Write complete, production-ready mobile code. Requirements: no memory leaks (remove all listeners in cleanup/onDestroy/useEffect cleanup), handle all network states (loading/error/offline/timeout), request permissions correctly (check before use, handle denial gracefully), use platform conventions (HIG for iOS, Material for Android). Complete, copy-paste ready code.' > "$SP2_FILE"
-
-printf '%s' 'You are a Mobile QA Engineer specializing in performance and platform compliance. Review for: memory leaks (unreleased listeners, retained contexts), main thread blocking (network/DB on UI thread), FlatList/RecyclerView performance (missing keyExtractor, no getItemLayout), missing accessibility support (contentDescription, accessibilityLabel), App Store/Play Store guideline violations, missing permission rationale. Format: [SEVERITY] | Issue | Platform | Fix.' > "$SP3_FILE"
-
-printf '%s' 'You are the Mobile Team Lead. Combine: Mobile Architecture Design, Implementation Code, and Platform Review. Deliver: (1) Architecture overview with navigation flow, (2) Complete mobile code with all reviewer fixes applied, (3) Platform-specific notes (iOS vs Android differences), (4) App Store submission checklist. Fix all CRITICAL/HIGH reviewer findings.' > "$SYNTH_FILE"
-
-{
-  SYSTEM_PROMPT="$(cat "$SP1_FILE")" "$AGENTS2_DIR/call_model.sh" "$AGENT1_MODEL" < "$WORK_DIR/p1.txt" > "$WORK_DIR/r1.txt" 2>/dev/null \
-    || printf '[%s/%s failed]' "$TEAM" "$ROLE1_NAME" > "$WORK_DIR/r1.txt"
-} &
-{
-  SYSTEM_PROMPT="$(cat "$SP2_FILE")" "$AGENTS2_DIR/call_model.sh" "$AGENT2_MODEL" < "$WORK_DIR/p2.txt" > "$WORK_DIR/r2.txt" 2>/dev/null \
-    || printf '[%s/%s failed]' "$TEAM" "$ROLE2_NAME" > "$WORK_DIR/r2.txt"
-} &
-{
-  SYSTEM_PROMPT="$(cat "$SP3_FILE")" "$AGENTS2_DIR/call_model.sh" "$AGENT3_MODEL" < "$WORK_DIR/p3.txt" > "$WORK_DIR/r3.txt" 2>/dev/null \
-    || printf '[%s/%s failed]' "$TEAM" "$ROLE3_NAME" > "$WORK_DIR/r3.txt"
-} &
-wait
-
-echo "  ✅ [$TEAM] Agents done, synthesizing..." >&2
-
-COMBINED="## [$ROLE1_NAME — $AGENT1_MODEL]
-$(cat "$WORK_DIR/r1.txt")
-
-## [$ROLE2_NAME — $AGENT2_MODEL]
-$(cat "$WORK_DIR/r2.txt")
-
-## [$ROLE3_NAME — $AGENT3_MODEL]
-$(cat "$WORK_DIR/r3.txt")"
-
-RESULT=$(printf '%s' "$COMBINED" | SYSTEM_PROMPT="$(cat "$SYNTH_FILE")" "$AGENTS2_DIR/call_model.sh" "openai/gpt-4o" 2>/dev/null) || RESULT="$COMBINED"
-[ -z "$RESULT" ] && RESULT="$COMBINED"
-
-memory_append "$TEAM" "$(date '+%Y-%m-%d'): ${TASK_SUMMARY:0:80}"
-log_action "$TEAM" "lead" "3-parallel" "SUCCESS" "$TASK_SUMMARY" "$RAW_TASK" "$RESULT"
-
-RESULT="${RESULT}
----
-## 🔍 [$TEAM Team] Self-Assessment
-Specialists: Designer(gpt-4o-mini) + Coder(deepseek) + Reviewer(gemini-flash)
+SELF_ASSESSMENT='Specialists: Designer + Coder + Reviewer
 Additional teams that could add value:
 - backend: API design for mobile consumption (response size, offline sync strategy)
 - security: mobile-specific security (certificate pinning, jailbreak detection, secure storage)
-- qa: automated mobile testing (Detox, XCUITest, Espresso)"
+- qa: automated mobile testing (Detox, XCUITest, Espresso)'
 
-echo "  ✅ [$TEAM] Done" >&2
-echo "$RESULT"
+source "$AGENTS2_DIR/lib/team_runner.sh"

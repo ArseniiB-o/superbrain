@@ -30,4 +30,4 @@ RAW TASK:
 ${RAW_TASK}"
 
 RESULT=$(printf '%s' "$USER_MSG" | SYSTEM_PROMPT="$SYSTEM_PROMPT" "$AGENTS2_DIR/call_model.sh" "openai/gpt-4o" 2>/dev/null) || RESULT=""
-if [ -n "$RESULT" ] && ! echo "$RESULT" | grep -qi "^Error\|^API Error"; then echo "$RESULT"; else echo "$RAW_TASK"; fi
+if [ -n "$RESULT" ] && ! printf '%s' "$RESULT" | grep -qi "^Error\|^API Error"; then echo "$RESULT"; else echo "$RAW_TASK"; fi

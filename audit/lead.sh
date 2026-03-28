@@ -16,7 +16,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENTS2_DIR="$SCRIPT_DIR/.."
+AGENTS2_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Load .env if present
 ENV_FILE="${AGENTS2_DIR}/.env"
@@ -356,9 +356,8 @@ printf '\033[1m[3/3] Updating audit memory...\033[0m\n' >&2
 
 # Extract overall score line for memory
 SCORE_LINE="$(printf '%s' "$SYNTHESIS_RESULT" | grep -i 'Overall:' | head -1 | sed 's/[[:space:]]*$//' || printf 'score unknown')"
-CRITICAL_COUNT="$(printf '%s' "$SYNTHESIS_RESULT" | grep -c '## 🔴 CRITICAL\|CRITICAL\]' | head -1 || printf '?')"
 
-memory_append "audit" "Audit: ${TASK_SUMMARY:0:70} | ${SCORE_LINE} | Synthesis: ${SYNTHESIS_MODEL}"
+memory_append "audit" "Audit: ${TASK_SUMMARY:0:70} | ${SCORE_LINE} | Synthesis: ${SYNTHESIS_MODEL}" || true
 memory_append "audit" "Pattern: ran security+architecture+quality sub-audits in parallel, synthesized with ${SYNTHESIS_MODEL}"
 
 log_action "audit" "lead" "$SYNTHESIS_MODEL" "SUCCESS" \

@@ -26,14 +26,21 @@ decomposer (deepseek-chat)
 │                                                              │
 │  frontend/lead.sh   backend/lead.sh   security/lead.sh ...  │
 │       |                  |                  |               │
-│  prompt_engineer    prompt_engineer    prompt_engineer       │
+│  [cache check]      [cache check]      [cache check]        │
+│    hit? → skip        hit? → skip        hit? → skip        │
 │       |                  |                  |               │
-│  primary model      primary model      primary model        │
-│       |    [fail]        |    [fail]        |    [fail]     │
-│  fallback1          fallback1          fallback1            │
-│       |    [fail]        |    [fail]        |    [fail]     │
-│  fallback2          fallback2          fallback2            │
+│  team PE            team PE            team PE               │
+│  (specialized)      (specialized)      (specialized)         │
 │       |                  |                  |               │
+│  3 specialists      3 specialists      3 specialists        │
+│  in parallel:       in parallel:       in parallel:         │
+│  spec1(primary)     spec1(primary)     spec1(primary)       │
+│  spec2(fallback1)   spec2(fallback1)   spec2(fallback1)     │
+│  spec3(fallback2)   spec3(fallback2)   spec3(fallback2)     │
+│       |                  |                  |               │
+│  gpt-4o synth       gpt-4o synth       gpt-4o synth        │
+│       |                  |                  |               │
+│  cache_write        cache_write        cache_write           │
 │  memory_append      memory_append      memory_append        │
 └──────────────────────────────────────────────────────────────┘
     |
@@ -49,6 +56,8 @@ synthesizer (gpt-4o)
 Final Answer + Report Table
 ```
 
+> **Примечание:** Глобальный prompt engineer удалён. Каждая команда имеет собственный специализированный PE, что устраняет двойную оптимизацию промптов и снижает overhead.
+
 ---
 
 ## Отличия от Agents v1
@@ -59,11 +68,14 @@ Final Answer + Report Table
 | Системный промпт | Фиксированный в роли | Специализированный для команды |
 | Fallback моделей | Нет (один вызов) | Три уровня: primary → fallback1 → fallback2 |
 | Память | Нет | `teams/*/memory.md` — персистентная между сессиями |
-| Prompt engineering | Автоматический внутри каждой роли | Автоматический внутри каждой команды через `lib/prompt_engineer.sh` |
-| Флаги оркестратора | Нет | `--new-project`, `--audit`, `--teams`, `--no-pe` |
+| Prompt engineering | Автоматический внутри каждой роли | Специализированный PE внутри каждой команды (без глобального PE) |
+| Флаги оркестратора | Нет | `--new-project`, `--audit`, `--teams`, `--no-pe`, `--dry-run`, `--no-cache` |
 | Логирование | Одна строка на вызов | Две лог-файла: `.log` (oneliner) + `.full.log` (детальный) |
 | Декомпозиция | По агентам | По командам с командным контекстом |
 | Конфигурация | `config.json` с агентами | `config.json` с командами и моделями |
+| Response cache | Нет | Файловый кэш в `.cache/` (hash, TTL 1 час) |
+| Config-driven models | Модели захардкожены в скриптах | Модели читаются из `config.json` |
+| --dry-run mode | Нет | Показывает план выполнения без запуска команд |
 
 ---
 
@@ -147,6 +159,36 @@ Final Answer + Report Table
 - **Fallback**: `openai/gpt-4o-mini` → `google/gemini-2.0-flash-001`
 - **Когда использовать**: роадмапы, milestone-планы, оценка задач, структура проекта
 
+#### `marketing` — Маркетинг
+- **Область**: TAM/SAM/SOM, каналы привлечения, growth hacking, контент-маркетинг, SEO
+- **Primary model**: `deepseek/deepseek-chat`
+- **Fallback**: `openai/gpt-4o-mini` → `google/gemini-2.0-flash-001`
+- **Когда использовать**: маркетинговая стратегия, acquisition-каналы, growth-эксперименты
+
+#### `legal` — Юридическая экспертиза
+- **Область**: GDPR/DSGVO, EU AI Act, compliance, контрактное право, ToS/Privacy Policy
+- **Primary model**: `openai/gpt-4o`
+- **Fallback**: `deepseek/deepseek-chat` → `openai/gpt-4o-mini`
+- **Когда использовать**: проверка compliance, составление ToS, анализ регуляторных требований
+
+#### `risk` — Управление рисками
+- **Область**: risk register, probability/impact матрицы, mitigation-стратегии, contingency planning
+- **Primary model**: `openai/gpt-4o`
+- **Fallback**: `deepseek/deepseek-chat` → `google/gemini-2.0-flash-001`
+- **Когда использовать**: оценка рисков проекта, risk matrix, планы митигации
+
+#### `finance` — Финансовое моделирование
+- **Область**: unit economics, финансовые модели, pricing strategy, P&L, runway-калькуляция
+- **Primary model**: `deepseek/deepseek-chat`
+- **Fallback**: `openai/gpt-4o` → `openai/gpt-4o-mini`
+- **Когда использовать**: финмодели, ценообразование, юнит-экономика, инвесторские метрики
+
+#### `researcher` — Исследования
+- **Область**: market research, case studies, competitive intelligence, технологический скаутинг
+- **Primary model**: `openai/gpt-4o-mini`
+- **Fallback**: `deepseek/deepseek-chat` → `google/gemini-2.0-flash-001`
+- **Когда использовать**: исследование рынка, анализ конкурентов, сбор данных, кейс-стади
+
 ---
 
 ### Оркестрационные модули
@@ -155,9 +197,14 @@ Final Answer + Report Table
 |--------|--------|-----------|
 | `decomposer` | `deepseek/deepseek-chat` | Разбивает задачу на подзадачи по командам, возвращает JSON |
 | `synthesizer` | `openai/gpt-4o` | Объединяет все результаты команд в единый ответ |
-| `lib/prompt_engineer.sh` | `openai/gpt-4o` | Оптимизирует промпт перед отправкой в каждую команду |
+| `teams/*/prompt_engineer.sh` | `openai/gpt-4o` | Специализированный PE внутри каждой команды (per-team, не глобальный) |
+| `lib/team_runner.sh` | — | Общий движок выполнения команд (все lead.sh — тонкие обёртки над ним) |
 | `planning/director.sh` | `openai/gpt-4o` | Pre-project анализ: vision, архитектура, риски (флаг `--new-project`) |
 | `audit/lead.sh` | `openai/gpt-4o` | Финальный аудит: качество, безопасность, пробелы (флаг `--audit`) |
+
+> **Примечание о моделях:** Модели для всех команд теперь читаются из `config.json`, а не захардкожены в `lead.sh` файлах. Это позволяет менять модели централизованно без редактирования скриптов.
+
+> **Примечание о team_runner.sh:** Все файлы `teams/*/lead.sh` являются тонкими обёртками, которые задают `TEAM` и `TEAM_SYSTEM_PROMPT`, а затем sourcing `lib/team_runner.sh` — общий движок, содержащий логику кэша, PE, fallback-цепочки и записи в память.
 
 ---
 
@@ -232,6 +279,30 @@ cat brief.txt | ~/.agents2/dispatch.sh "разработай стратегию 
 ~/.agents2/dispatch.sh --no-pe "быстрый вопрос: какой HTTP код для rate limiting?"
 ```
 
+#### `--dry-run` — показать план без выполнения
+
+Запускает декомпозицию и показывает, какие команды будут задействованы, с какими подзадачами и моделями — но **не выполняет** их. Полезно для проверки маршрутизации перед запуском.
+
+```bash
+# Посмотреть, какие команды будут задействованы
+~/.agents2/dispatch.sh --dry-run "спроектируй систему уведомлений"
+
+# Dry-run с принудительными командами
+~/.agents2/dispatch.sh --dry-run --teams "backend,frontend,qa" "реализуй dashboard"
+```
+
+#### `--no-cache` — обойти кэш ответов
+
+Принудительно пропускает файловый кэш и выполняет все запросы к моделям заново, даже если кэшированный ответ ещё не истёк.
+
+```bash
+# Получить свежий ответ, игнорируя кэш
+~/.agents2/dispatch.sh --no-cache "анализ текущего состояния проекта"
+
+# Комбинация: свежий ответ + аудит
+~/.agents2/dispatch.sh --no-cache --audit "проверь безопасность auth-модуля"
+```
+
 #### Комбинирование флагов
 
 ```bash
@@ -243,7 +314,43 @@ cat brief.txt | ~/.agents2/dispatch.sh "разработай стратегию 
 
 # Новый проект + конкретные команды
 ~/.agents2/dispatch.sh --new-project --teams "backend,devops,security" "деплой на AWS EKS"
+
+# Dry-run + new-project (проверить план перед запуском)
+~/.agents2/dispatch.sh --dry-run --new-project "создай платёжную систему"
+
+# Свежий ответ без кэша + конкретные команды
+~/.agents2/dispatch.sh --no-cache --teams "analyst,finance" "обнови финмодель"
 ```
+
+---
+
+## Response cache
+
+Система использует файловый кэш для ускорения повторных запросов.
+
+**Расположение:** `~/.agents2/.cache/`
+
+**Принцип работы:**
+1. Перед вызовом модели вычисляется SHA-256 хэш от (системный промпт + задача + модель)
+2. Если в `.cache/` есть файл с таким хэшем и он не старше **1 часа** — возвращается кэшированный ответ без вызова API
+3. Если кэш отсутствует или истёк — выполняется обычный запрос, результат сохраняется в кэш
+
+**Обход кэша:**
+```bash
+# Флаг --no-cache пропускает проверку и перезаписывает кэш
+~/.agents2/dispatch.sh --no-cache "задача"
+```
+
+**Очистка кэша вручную:**
+```bash
+# Удалить весь кэш
+rm -rf ~/.agents2/.cache/*
+
+# Посмотреть размер кэша
+du -sh ~/.agents2/.cache/
+```
+
+**TTL:** 1 час (3600 секунд). После истечения TTL запись считается невалидной и перезаписывается при следующем запросе.
 
 ---
 
@@ -260,6 +367,9 @@ cat brief.txt | ~/.agents2/dispatch.sh "разработай стратегию 
 
 # Ревью PR перед мержем
 cat changes.diff | ~/.agents2/dispatch.sh --teams "backend,security,qa" "ревью этих изменений"
+
+# Dry-run для проверки плана
+~/.agents2/dispatch.sh --dry-run "рефакторинг модуля оплаты"
 ```
 
 ### Бизнес и стратегия
@@ -326,40 +436,32 @@ rm ~/.agents2/teams/backend/memory.md
 
 ---
 
-## Как работает fallback-цепочка
+## Как работают 3 параллельных специалиста внутри команды
 
-Каждая команда настроена с тремя моделями. При сбое основной автоматически пробуется следующая:
+Каждая команда запускает **трёх независимых специалистов параллельно**, каждый с уникальной ролью и своей моделью из `config.json`:
 
 ```
-primary model
+team task
     |
-    | [fail / empty / timeout]
+    +---> Specialist 1 (primary model)   — e.g. Architect
+    +---> Specialist 2 (fallback1 model) — e.g. Coder
+    +---> Specialist 3 (fallback2 model) — e.g. Reviewer
+    |         [all 3 run in parallel]
     v
-fallback1 model
-    |
-    | [fail / empty / timeout]
-    v
-fallback2 model
-    |
-    | [fail]
-    v
-ERROR: все модели недоступны
+gpt-4o synthesizer — merges all 3 outputs into one answer
 ```
 
-**Логика сбоя:**
-- HTTP 429 (rate limit) → retry через 5 секунд, затем fallback
-- HTTP 5xx → немедленный fallback
-- Пустой ответ → считается сбоем, fallback
-- Timeout (60 сек) → fallback
+Это **не последовательный fallback**, а **три разных взгляда** на задачу одновременно. Синтезатор объединяет их в финальный ответ, устраняя противоречия и выбирая лучшее.
 
-**Экспортируемые переменные после выполнения:**
-- `FALLBACK_USED_MODEL` — какая модель фактически ответила
-- `FALLBACK_ATTEMPTS` — сколько попыток потребовалось
+**Устойчивость к сбоям:**
+- Если один специалист вернул ошибку — синтезатор получает 2 полных ответа и 1 сообщение об ошибке, и строит итог по оставшимся.
+- Каждый вызов `call_model.sh` имеет встроенный retry на HTTP 429 (2 попытки, пауза 5 сек).
+- Timeout на каждого специалиста — 60 сек.
 
-**Текущие fallback-цепочки по командам:**
+**Текущие модели по командам** (читаются из `config.json`):
 
-| Команда | Primary | Fallback 1 | Fallback 2 |
-|---------|---------|------------|------------|
+| Команда | Specialist 1 (primary) | Specialist 2 (fallback1) | Specialist 3 (fallback2) |
+|---------|------------------------|--------------------------|--------------------------|
 | frontend | gpt-4o-mini | gemini-2.0-flash | deepseek-chat |
 | backend | deepseek-chat | gpt-4o-mini | gemini-2.0-flash |
 | devops | gpt-4o-mini | deepseek-chat | gemini-2.0-flash |
@@ -372,6 +474,13 @@ ERROR: все модели недоступны
 | strategy | deepseek-chat | gpt-4o | gpt-4o-mini |
 | writer | gpt-4o | deepseek-chat | gpt-4o-mini |
 | planner | deepseek-chat | gpt-4o-mini | gemini-2.0-flash |
+| marketing | deepseek-chat | gpt-4o-mini | gemini-2.0-flash |
+| legal | gpt-4o | deepseek-chat | gpt-4o-mini |
+| risk | deepseek-chat | gpt-4o | gpt-4o-mini |
+| finance | deepseek-chat | gpt-4o | gpt-4o-mini |
+| researcher | gpt-4o-mini | deepseek-chat | gemini-2.0-flash |
+
+> **Примечание:** Модели для каждой команды читаются из `config.json`. Таблица выше отражает текущую конфигурацию. Чтобы изменить модели — отредактируй `config.json`, перезапуск скриптов не требуется.
 
 ---
 
@@ -396,8 +505,9 @@ chmod +x ~/.agents2/teams/payments/lead.sh
 
 В файле измени:
 - `TEAM="payments"`
-- `PRIMARY_MODEL`, `FALLBACK1_MODEL`, `FALLBACK2_MODEL` — нужные модели
 - `TEAM_SYSTEM_PROMPT` — экспертный системный промпт для команды
+
+> **Примечание:** Модели больше не задаются в `lead.sh` — они читаются из `config.json`. Все `lead.sh` являются тонкими обёртками, которые sourcing `lib/team_runner.sh`.
 
 ### 3. Создать `memory.md`
 
@@ -437,6 +547,7 @@ EOF
 VALID_TEAMS = {
     "frontend", "backend", "devops", "security", "qa",
     "mobile", "data", "aiml", "analyst", "strategy", "writer", "planner",
+    "marketing", "legal", "risk", "finance", "researcher",
     "payments"  # <-- добавить
 }
 ```
@@ -492,7 +603,7 @@ echo 'export OPENROUTER_API_KEY=sk-or-ваш-ключ' >> ~/.agents2/.env
 
 ### Команда зависла или вернула пустой ответ
 
-Таймаут на команду — 90 секунд. После этого fallback не применяется на уровне dispatch (только внутри самой команды). Команда вернёт `[team timed out after 90s]`.
+Таймаут на команду — 300 секунд. После этого fallback не применяется на уровне dispatch (только внутри самой команды). Команда вернёт `[team timed out after 300s]`.
 
 Синтезатор включит эту информацию и пропустит недоступную команду.
 
@@ -540,20 +651,22 @@ source ~/.bashrc
 ~/.agents2/
 ├── dispatch.sh              ← главный оркестратор (этот файл запускаешь)
 ├── call_model.sh            ← прямой вызов модели через OpenRouter
-├── config.json              ← конфигурация команд и моделей
+├── config.json              ← конфигурация команд и моделей (единый источник правды)
 ├── AGENTS.md                ← эта документация
 ├── .env                     ← OPENROUTER_API_KEY (не в git!)
 │
+├── .cache/                  ← файловый кэш ответов (hash-based, TTL 1 час)
+│
 ├── lib/
-│   ├── logger.sh            ← логирование (oneliner + full)
-│   ├── fallback.sh          ← fallback-цепочка моделей
+│   ├── logger.sh            ← логирование (oneliner + full, flock-safe)
 │   ├── memory.sh            ← работа с командной памятью
-│   └── prompt_engineer.sh   ← оптимизация промптов
+│   └── team_runner.sh       ← общий движок выполнения команд (sourcing из lead.sh)
 │
 ├── teams/
 │   ├── frontend/
-│   │   ├── lead.sh          ← Team Lead (оркестратор команды)
-│   │   └── memory.md        ← персистентная память команды
+│   │   ├── lead.sh              ← Team Lead (тонкая обёртка над team_runner.sh)
+│   │   ├── prompt_engineer.sh   ← специализированный PE для этой команды
+│   │   └── memory.md            ← персистентная память команды
 │   ├── backend/
 │   ├── devops/
 │   ├── security/
@@ -564,7 +677,12 @@ source ~/.bashrc
 │   ├── analyst/
 │   ├── strategy/
 │   ├── writer/
-│   └── planner/
+│   ├── planner/
+│   ├── marketing/
+│   ├── legal/
+│   ├── risk/
+│   ├── finance/
+│   └── researcher/
 │
 ├── planning/
 │   ├── director.sh          ← Pre-project директор (--new-project)

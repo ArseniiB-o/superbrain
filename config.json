@@ -166,8 +166,14 @@
     "provider": "openrouter",
     "base_url": "https://openrouter.ai/api/v1/chat/completions",
     "api_key_env": "OPENROUTER_API_KEY",
-    "timeout_seconds": 60,
-    "max_retries": 2
+    "timeout_seconds": 120,
+    "max_retries": 3
+  },
+  "orchestration_limits": {
+    "max_parallel_teams": 6,
+    "max_doc_concurrency": 5,
+    "team_timeout_seconds": 300,
+    "cache_ttl_seconds": 3600
   },
   "memory": {
     "max_lines": 40,
@@ -177,6 +183,7 @@
   "logging": {
     "log_full_prompts": true,
     "log_responses": true,
-    "response_preview_chars": 500
+    "response_preview_chars": 500,
+    "log_rotation_days": 7
   }
 }

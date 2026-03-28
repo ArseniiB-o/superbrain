@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENTS2_DIR="$SCRIPT_DIR/.."
+AGENTS2_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Load .env if present
 ENV_FILE="${AGENTS2_DIR}/.env"
@@ -288,7 +288,7 @@ printf '%s\n' "$SYNTHESIS_RESULT"
 printf '\n'
 
 # ── Clarifying questions with 30-second timeout ────────────────────────────────
-if [ "$SKIP_QUESTIONS" -eq 0 ]; then
+if [ "$SKIP_QUESTIONS" -eq 0 ] && [ -t 0 ]; then
     printf '\n\033[1m[3/3] Clarifying Questions — you have 30 seconds to respond\033[0m\n' >&2
     printf '      (Press Enter after each answer, or wait to auto-proceed)\n\n' >&2
 
@@ -312,6 +312,10 @@ if [ "$SKIP_QUESTIONS" -eq 0 ]; then
             printf '\n\n  Timeout reached (30s). Proceeding with best assumptions.\n\n' >&2
         fi
     fi
+elif [ "$SKIP_QUESTIONS" -eq 0 ]; then
+    # Non-interactive context (called from dispatch.sh or pipe) — skip without waiting
+    printf '\n  [non-interactive] Skipping clarifying questions (no tty).\n\n' >&2
+    ANSWERS="[auto-proceed: non-interactive mode]"
 else
     printf '\n  [--skip-questions] Skipping clarifying questions, auto-proceeding.\n\n' >&2
     ANSWERS="[auto-proceed: no user input requested]"

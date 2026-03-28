@@ -20,6 +20,9 @@
 
 set -euo pipefail
 
+# Ensure UTF-8 for Python on Windows
+export PYTHONUTF8=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Load API key ──────────────────────────────────────────────────────────────
@@ -80,7 +83,7 @@ export _CM_API_KEY="${OPENROUTER_API_KEY:-}"
 
 # ── Python: call OpenRouter API ───────────────────────────────────────────────
 python3 - << 'PYEOF'
-import json, os, sys, time
+import json, os, sys, time, socket
 import urllib.request, urllib.error
 
 # ── UTF-8 safety (Windows) ────────────────────────────────────────────────────
@@ -126,6 +129,7 @@ messages.append({"role": "user", "content": prompt})
 payload = json.dumps({
     "model": model,
     "messages": messages,
+    "max_tokens": 8192,
 }).encode("utf-8")
 
 req = urllib.request.Request(
@@ -140,10 +144,10 @@ req = urllib.request.Request(
     method="POST",
 )
 
-# ── Send with retry on 429 ────────────────────────────────────────────────────
-MAX_RETRIES = 2
-RETRY_DELAY = 5   # seconds between retries on rate-limit
-TIMEOUT     = 60  # seconds
+# ── Send with retry on 429 / 5xx ─────────────────────────────────────────────
+MAX_RETRIES = 3
+BASE_DELAY  = 2   # seconds for exponential backoff: 2^attempt
+TIMEOUT     = 120 # seconds — long AI responses need headroom
 
 for attempt in range(MAX_RETRIES + 1):
     try:
@@ -153,7 +157,8 @@ for attempt in range(MAX_RETRIES + 1):
         data = json.loads(raw)
 
         try:
-            content = data["choices"][0]["message"]["content"]
+            choice  = data["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError):
             print(
                 f"Error: unexpected API response format:\n{json.dumps(data, indent=2)}",
@@ -165,6 +170,15 @@ for attempt in range(MAX_RETRIES + 1):
             print("Error: model returned an empty response", file=sys.stderr)
             sys.exit(2)
 
+        # Warn if response was truncated
+        finish_reason = choice.get("finish_reason", "")
+        if finish_reason == "length":
+            print(
+                "Warning: response truncated (finish_reason=length). "
+                "Consider increasing max_tokens or splitting the task.",
+                file=sys.stderr,
+            )
+
         print(content, end="")
         sys.exit(0)
 
@@ -175,24 +189,48 @@ for attempt in range(MAX_RETRIES + 1):
         except Exception:
             err_msg = body
 
+        # Non-retryable client errors
+        if exc.code in (400, 401, 403, 404):
+            print(f"API Error ({exc.code}): {err_msg}", file=sys.stderr)
+            sys.exit(1)
+
         if exc.code == 429 and attempt < MAX_RETRIES:
+            # Respect Retry-After header if present
+            retry_after_str = exc.headers.get("Retry-After", "")
+            try:
+                retry_after = int(retry_after_str)
+            except (ValueError, TypeError):
+                retry_after = int(BASE_DELAY ** (attempt + 1))
             print(
                 f"Warning: rate limited by OpenRouter (attempt {attempt + 1}/{MAX_RETRIES + 1}), "
-                f"retrying in {RETRY_DELAY}s…",
+                f"retrying in {retry_after}s…",
                 file=sys.stderr,
             )
-            time.sleep(RETRY_DELAY)
+            time.sleep(retry_after)
+            continue
+
+        if exc.code >= 500 and attempt < MAX_RETRIES:
+            delay = int(BASE_DELAY ** (attempt + 1))
+            print(
+                f"Warning: server error {exc.code} (attempt {attempt + 1}/{MAX_RETRIES + 1}), "
+                f"retrying in {delay}s…",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
             continue
 
         print(f"API Error ({exc.code}): {err_msg}", file=sys.stderr)
         sys.exit(1)
 
-    except TimeoutError:
+    except (TimeoutError, socket.timeout, OSError) as exc:
         if attempt < MAX_RETRIES:
+            delay = int(BASE_DELAY ** (attempt + 1))
             print(
-                f"Warning: request timed out (attempt {attempt + 1}/{MAX_RETRIES + 1}), retrying…",
+                f"Warning: request timed out (attempt {attempt + 1}/{MAX_RETRIES + 1}), "
+                f"retrying in {delay}s…",
                 file=sys.stderr,
             )
+            time.sleep(delay)
             continue
         print(f"Error: request timed out after {TIMEOUT}s", file=sys.stderr)
         sys.exit(1)

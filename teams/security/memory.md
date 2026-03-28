@@ -1,5 +1,5 @@
 # Team Memory: security
-Last updated: 2026-03-26
+Last updated: 2026-03-27 21:44
 
 ## Accumulated Knowledge
 - ALWAYS check: SQL injection, XSS, CSRF, SSRF, XXE, broken auth
@@ -9,3 +9,4 @@ Last updated: 2026-03-26
 - CORS: explicit allowlist only, never wildcard with credentials
 - HTTP headers: always set CSP, HSTS, X-Frame-Options, X-Content-Type-Options
 - JWT: verify signature, check expiry, use RS256 not HS256 for production
+- [2026-03-27 21:44] 2026-03-27: What are 2 REST API security practices?

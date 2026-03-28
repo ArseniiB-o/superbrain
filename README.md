@@ -106,7 +106,7 @@ SuperBrain selects the best model for each role via [OpenRouter](https://openrou
 
 - bash 4+
 - `curl`
-- `jq`
+- Python 3.6+
 - OpenRouter API key → [openrouter.ai/keys](https://openrouter.ai/keys)
 
 ### Setup
@@ -303,8 +303,7 @@ Approximate cost per full dispatch run (all teams):
 ├── lib/
 │   ├── logger.sh            # Structured logging
 │   ├── memory.sh            # Per-team memory management
-│   ├── fallback.sh          # Sequential model fallback
-│   └── prompt_engineer.sh   # Global dispatch-level PE
+│   └── team_runner.sh       # Shared team execution logic
 ├── teams/
 │   └── <team>/
 │       ├── lead.sh          # Team lead (3-specialist parallel pipeline)
@@ -316,9 +315,19 @@ Approximate cost per full dispatch run (all teams):
 ├── audit/
 │   ├── lead.sh              # Cross-team audit orchestrator
 │   └── memory.md            # Audit pattern memory
+├── regression.sh            # 28-check test suite
 └── logs/
     ├── session_*.log        # Compact session logs
     └── session_*.full.log   # Full prompt/response logs
+```
+
+---
+
+## Regression Tests
+
+```bash
+bash regression.sh
+# 28 checks: syntax, paths, Windows compatibility, API config, all 17 teams
 ```
 
 ---

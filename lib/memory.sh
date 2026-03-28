@@ -112,17 +112,18 @@ memory_append() {
     ts="$(date "+%Y-%m-%d %H:%M")"
 
     # Append the bullet
-    printf '- [%s] %s\n' "$ts" "$text" >> "$file"
+    printf -- '- [%s] %s\n' "$ts" "$text" >> "$file"
 
     # Update timestamp header
     _memory_touch_timestamp "$file"
 
-    # Count total lines
+    # Count total lines (strip \r for Windows line ending safety)
     local total_lines
-    total_lines="$(wc -l < "$file")"
+    total_lines="$(wc -l < "$file" | tr -d '[:space:]')"
+    total_lines="${total_lines%$'\r'}"
 
     # Hard trim if over MAX_LINES (keep header + last TRIM_TO lines)
-    if [ "$total_lines" -gt "$MAX_LINES" ]; then
+    if [ "${total_lines:-0}" -gt "$MAX_LINES" ]; then
         local tmp
         tmp="$(mktemp)"
 
@@ -139,7 +140,8 @@ memory_append() {
     # Count lines in the "Accumulated Knowledge" section to decide if summarization is needed.
     # We count bullet lines (lines starting with '-') as a proxy.
     local bullet_lines
-    bullet_lines="$(grep -c '^-' "$file" 2>/dev/null || true)"
+    bullet_lines="$(grep -c '^-' "$file" 2>/dev/null || echo 0)"
+    bullet_lines="${bullet_lines%$'\r'}"
 
     if [ "${bullet_lines:-0}" -gt "$SUMMARIZE_AT" ]; then
         memory_summarize "$team"
@@ -182,8 +184,8 @@ memory_summarize() {
 ${current_content}"
 
     local compressed
-    if compressed="$(SYSTEM_PROMPT="$system_prompt" printf '%s' "$user_prompt" | \
-                     "$call_model" "openai/gpt-4o-mini" 2>/dev/null)"; then
+    if compressed="$(printf '%s' "$user_prompt" | \
+                     SYSTEM_PROMPT="$system_prompt" "$call_model" "openai/gpt-4o-mini" 2>/dev/null)"; then
 
         local ts
         ts="$(date "+%Y-%m-%d %H:%M")"

@@ -16,6 +16,8 @@
 #   --audit          Run final audit after completion
 #   --teams LIST     Force specific teams (comma-separated)
 #   --no-pe          Skip prompt engineering (faster, less precise)
+#   --dry-run        Show decomposition plan without executing teams
+#   --no-cache       Bypass response cache
 
 set -euo pipefail
 
@@ -33,6 +35,8 @@ source "${SCRIPT_DIR}/lib/logger.sh"
 FLAG_NEW_PROJECT=0
 FLAG_AUDIT=0
 FLAG_NO_PE=0
+FLAG_DRY_RUN=0
+FLAG_NO_CACHE=0
 FORCED_TEAMS=""
 POSITIONAL_ARGS=()
 
@@ -50,6 +54,14 @@ while [[ $# -gt 0 ]]; do
             FLAG_NO_PE=1
             shift
             ;;
+        --dry-run)
+            FLAG_DRY_RUN=1
+            shift
+            ;;
+        --no-cache)
+            FLAG_NO_CACHE=1
+            shift
+            ;;
         --teams)
             FORCED_TEAMS="${2:?--teams requires a comma-separated list, e.g. --teams backend,security}"
             shift 2
@@ -61,7 +73,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -*)
             echo "Unknown flag: $1" >&2
-            echo "Usage: dispatch.sh [--new-project] [--audit] [--no-pe] [--teams LIST] \"task\"" >&2
+            echo "Usage: dispatch.sh [--new-project] [--audit] [--no-pe] [--dry-run] [--no-cache] [--teams LIST] \"task\"" >&2
             exit 1
             ;;
         *)
@@ -77,8 +89,16 @@ set -- "${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}"
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 export DISPATCH_WORK_DIR="$WORK_DIR"
-export DISPATCH_SCRIPT_DIR="$SCRIPT_DIR"
+# Convert MSYS2/Cygwin Unix-style path to Windows mixed path (C:/...) for Python (os.path.exists)
+if command -v cygpath &>/dev/null; then
+    export DISPATCH_SCRIPT_DIR="$(cygpath -m "$SCRIPT_DIR")"
+else
+    export DISPATCH_SCRIPT_DIR="$SCRIPT_DIR"
+fi
 export DISPATCH_NO_PE="$FLAG_NO_PE"
+
+# ── Ensure UTF-8 for Python on Windows ────────────────────────────────────────
+export PYTHONUTF8=1
 
 # ── 1. Read task ───────────────────────────────────────────────────────────────
 TASK_FILE="${WORK_DIR}/task.txt"
@@ -104,6 +124,37 @@ echo "" >&2
 echo "==> [dispatch v2] Task received: ${SUMMARY}..." >&2
 echo "" >&2
 
+# ── 1b. Response cache check ─────────────────────────────────────────────────
+TASK_HASH=$(printf '%s|nope=%s|audit=%s|newproject=%s|teams=%s' \
+    "$TASK" "$FLAG_NO_PE" "$FLAG_AUDIT" "$FLAG_NEW_PROJECT" "$FORCED_TEAMS" \
+    | python3 -c "import hashlib,sys; print(hashlib.md5(sys.stdin.buffer.read()).hexdigest())")
+CACHE_DIR="$AGENTS2_DIR/.cache"
+CACHE_FILE="$CACHE_DIR/${TASK_HASH}.txt"
+mkdir -p "$CACHE_DIR"
+
+# Purge cache entries older than 1 hour
+find "$CACHE_DIR" -maxdepth 1 -type f -name "*.txt" -mmin +60 -delete 2>/dev/null || true
+
+if [[ "$FLAG_NO_CACHE" -eq 0 && -f "$CACHE_FILE" ]]; then
+    # Check if cache file is less than 1 hour old — use Python for cross-platform portability
+    CACHE_AGE=$(_CM_CACHE_FILE="$CACHE_FILE" python3 -c "
+import os, time
+try:
+    path = os.environ['_CM_CACHE_FILE']
+    age = int(time.time() - os.path.getmtime(path))
+    print(age)
+except Exception:
+    print(9999)
+" 2>/dev/null || echo 9999)
+    if [[ "$CACHE_AGE" -lt 3600 ]]; then
+        echo "--> [dispatch] Cache hit (${TASK_HASH}, age: ${CACHE_AGE}s). Returning cached result." >&2
+        cat "$CACHE_FILE"
+        log_action "dispatch" "orchestrator" "dispatch.sh" "SUCCESS (cached)" "$SUMMARY"
+        log_session_end
+        exit 0
+    fi
+fi
+
 # ── 2. --new-project: run planning director first ─────────────────────────────
 if [[ "$FLAG_NEW_PROJECT" -eq 1 ]]; then
     DIRECTOR_SCRIPT="${SCRIPT_DIR}/planning/director.sh"
@@ -125,9 +176,9 @@ if [[ "$FLAG_NEW_PROJECT" -eq 1 ]]; then
         fi
 
         # ── Create project folder structure ────────────────────────────────────────────
-        PROJECT_NAME=$(echo "$TASK" | \
-            "$SCRIPT_DIR/call_model.sh" "openai/gpt-4o-mini" 2>/dev/null <<< \
-            "Extract a short project name (2-4 words, kebab-case) from this task: $TASK. Return ONLY the name, nothing else." || \
+        PROJECT_NAME=$(printf '%s' "$TASK" | \
+            SYSTEM_PROMPT="Extract a short project name (2-4 words, kebab-case) from the user task. Return ONLY the name, nothing else." \
+            "$SCRIPT_DIR/call_model.sh" "openai/gpt-4o-mini" 2>/dev/null || \
             echo "new-project-$(date +%Y%m%d)")
         PROJECT_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | head -c 40)
         PROJECT_DIR="$HOME/$PROJECT_NAME"
@@ -138,18 +189,24 @@ if [[ "$FLAG_NEW_PROJECT" -eq 1 ]]; then
         # Generate project documents using writer team
         BRIEF="${DIRECTOR_OUTPUT:-$TASK}"
 
-        for DOC_TASK in \
-            "Write a complete README.md for this project. Include: project overview, problem statement, solution, key features, tech stack, getting started.:$PROJECT_DIR/README.md" \
-            "Write docs/01_OVERVIEW.md — comprehensive project overview with vision, mission, target users, value proposition, and success metrics.:$PROJECT_DIR/docs/01_OVERVIEW.md" \
-            "Write docs/02_REQUIREMENTS.md — detailed functional and non-functional requirements, user stories, acceptance criteria.:$PROJECT_DIR/docs/02_REQUIREMENTS.md" \
-            "Write docs/03_TIMELINE.md — realistic project timeline with phases, milestones, dependencies, and risks.:$PROJECT_DIR/docs/03_TIMELINE.md" \
-            "Write technical/04_ARCHITECTURE.md — system architecture, tech stack decisions with justification, component diagram (ASCII), data flow.:$PROJECT_DIR/technical/04_ARCHITECTURE.md" \
-            "Write business/05_BUSINESS_PLAN.md — business model, revenue streams, unit economics (CAC/LTV), market size, competitive analysis.:$PROJECT_DIR/business/05_BUSINESS_PLAN.md" \
-            "Write legal/06_COMPLIANCE.md — legal requirements, GDPR compliance checklist, licenses needed, regulatory considerations for EU.:$PROJECT_DIR/legal/06_COMPLIANCE.md" \
-            "Write marketing/07_GTM.md — go-to-market strategy, target customer segments, acquisition channels, messaging framework.:$PROJECT_DIR/marketing/07_GTM.md" \
-            "Write research/08_MARKET_RESEARCH.md — market analysis with real statistics, competitor landscape, industry trends, comparable cases.:$PROJECT_DIR/research/08_MARKET_RESEARCH.md" \
+        # Generate documents in parallel (max 5 concurrent)
+        DOC_TASKS=(
+            "Write a complete README.md for this project. Include: project overview, problem statement, solution, key features, tech stack, getting started.:$PROJECT_DIR/README.md"
+            "Write docs/01_OVERVIEW.md — comprehensive project overview with vision, mission, target users, value proposition, and success metrics.:$PROJECT_DIR/docs/01_OVERVIEW.md"
+            "Write docs/02_REQUIREMENTS.md — detailed functional and non-functional requirements, user stories, acceptance criteria.:$PROJECT_DIR/docs/02_REQUIREMENTS.md"
+            "Write docs/03_TIMELINE.md — realistic project timeline with phases, milestones, dependencies, and risks.:$PROJECT_DIR/docs/03_TIMELINE.md"
+            "Write technical/04_ARCHITECTURE.md — system architecture, tech stack decisions with justification, component diagram (ASCII), data flow.:$PROJECT_DIR/technical/04_ARCHITECTURE.md"
+            "Write business/05_BUSINESS_PLAN.md — business model, revenue streams, unit economics (CAC/LTV), market size, competitive analysis.:$PROJECT_DIR/business/05_BUSINESS_PLAN.md"
+            "Write legal/06_COMPLIANCE.md — legal requirements, GDPR compliance checklist, licenses needed, regulatory considerations for EU.:$PROJECT_DIR/legal/06_COMPLIANCE.md"
+            "Write marketing/07_GTM.md — go-to-market strategy, target customer segments, acquisition channels, messaging framework.:$PROJECT_DIR/marketing/07_GTM.md"
+            "Write research/08_MARKET_RESEARCH.md — market analysis with real statistics, competitor landscape, industry trends, comparable cases.:$PROJECT_DIR/research/08_MARKET_RESEARCH.md"
             "Write docs/09_RISKS.md — comprehensive risk register with probability/impact scores, mitigation strategies, contingency plans.:$PROJECT_DIR/docs/09_RISKS.md"
-        do
+        )
+
+        MAX_DOC_CONCURRENCY=5
+        RUNNING_DOCS=0
+
+        for DOC_TASK in "${DOC_TASKS[@]}"; do
             DOC_TASK_TEXT="${DOC_TASK%%:*}"
             DOC_FILE="${DOC_TASK##*:}"
 
@@ -160,9 +217,20 @@ $BRIEF
 
 Task: $DOC_TASK_TEXT"
 
-            bash "$SCRIPT_DIR/teams/writer/lead.sh" "$FULL_DOC_TASK" > "$DOC_FILE" 2>/dev/null || \
-                printf '# %s\n\n[Generation failed — fill in manually]\n' "$(basename "$DOC_FILE")" > "$DOC_FILE"
+            (
+                bash "$SCRIPT_DIR/teams/writer/lead.sh" "$FULL_DOC_TASK" > "$DOC_FILE" 2>/dev/null || \
+                    printf '# %s\n\n[Generation failed — fill in manually]\n' "$(basename "$DOC_FILE")" > "$DOC_FILE"
+            ) &
+
+            RUNNING_DOCS=$((RUNNING_DOCS + 1))
+            if [[ "$RUNNING_DOCS" -ge "$MAX_DOC_CONCURRENCY" ]]; then
+                wait -n 2>/dev/null || wait
+                RUNNING_DOCS=$((RUNNING_DOCS - 1))
+            fi
         done
+
+        # Wait for all remaining background doc generation jobs
+        wait
 
         echo "✅ [dispatch] Project folder created: $PROJECT_DIR" >&2
         echo "" >&2
@@ -174,59 +242,9 @@ Task: $DOC_TASK_TEXT"
     fi
 fi
 
-# ── 0. Global Primary Prompt Engineer ─────────────────────────────────────────
-# Process user's raw prompt into a structured, clear task description
-# before routing to teams. This improves decomposition quality.
-
-if [ "${SKIP_PE:-0}" != "1" ] && [ "${NO_PE:-0}" != "1" ] && [ "$FLAG_NO_PE" -eq 0 ]; then
-    echo "✨ [dispatch] Running primary prompt engineer..." >&2
-
-    GLOBAL_PE_SYSTEM='You are the Master Dispatch Prompt Engineer for a multi-team AI system.
-Your job: Transform the user raw request into a perfectly clear, structured task specification.
-
-OUTPUT FORMAT:
-## TASK OVERVIEW
-[One paragraph: what needs to be done, why, for whom]
-
-## EXPLICIT REQUIREMENTS
-- [Specific requirement 1]
-- [Specific requirement 2]
-...
-
-## CONSTRAINTS & CONTEXT
-- [Technical constraint / stack / environment if mentioned]
-- [Business constraint if mentioned]
-- [Timeline if mentioned]
-
-## SUCCESS CRITERIA
-- [How we know this task is done well]
-- [What output is expected]
-
-## SCOPE BOUNDARIES
-- IN SCOPE: [what should be addressed]
-- OUT OF SCOPE: [what should NOT be addressed, if clear]
-
-RULES: Be specific. If user input is vague, make reasonable assumptions and state them.
-Do NOT add requirements not implied by user input. Return ONLY the structured task.'
-
-    ENHANCED_TASK=$(echo "$TASK" | \
-        SYSTEM_PROMPT="$GLOBAL_PE_SYSTEM" \
-        "$SCRIPT_DIR/call_model.sh" "openai/gpt-4o" 2>/dev/null || echo "$TASK")
-
-    if [ -n "$ENHANCED_TASK" ] && ! echo "$ENHANCED_TASK" | grep -qi "^Error\|^API Error"; then
-        echo "  ✅ [dispatch] Prompt enhanced" >&2
-        # Prepend original task for context
-        TASK="$ENHANCED_TASK
-
----
-ORIGINAL USER REQUEST: $TASK"
-        printf '%s' "$TASK" > "$TASK_FILE"
-    else
-        echo "  ⚠️  [dispatch] PE failed, using original prompt" >&2
-    fi
-fi
-
 # ── 3. Decompose into team subtasks ───────────────────────────────────────────
+# NOTE: Global PE removed — each team has its own specialized prompt engineer
+# which produces better results and avoids double-optimization overhead.
 echo "--> [dispatch] Decomposing task into team subtasks..." >&2
 
 DECOMPOSER_SYSTEM='You are a master task router for a team of AI specialists. Your job: analyze any task and route subtasks to the right specialist teams. Return ONLY valid JSON, no markdown, no code fences, no explanation.
@@ -331,15 +349,15 @@ if [[ "$PLAN_VALID" != "ok" ]]; then
 
     # Determine fallback team based on task content
     FALLBACK_TEAM="backend"
-    if echo "$TASK" | grep -qiE "strategy|market|launch|gtm|competitor|revenue|growth"; then
+    if printf '%s' "$TASK" | grep -qiE "strategy|market|launch|gtm|competitor|revenue|growth"; then
         FALLBACK_TEAM="strategy"
-    elif echo "$TASK" | grep -qiE "write|email|blog|copy|content|report|doc"; then
+    elif printf '%s' "$TASK" | grep -qiE "write|email|blog|copy|content|report|doc"; then
         FALLBACK_TEAM="writer"
-    elif echo "$TASK" | grep -qiE "analys|metric|data|kpi|insight|dashboard"; then
+    elif printf '%s' "$TASK" | grep -qiE "analys|metric|data|kpi|insight|dashboard"; then
         FALLBACK_TEAM="analyst"
-    elif echo "$TASK" | grep -qiE "plan|roadmap|sprint|timeline|milestone"; then
+    elif printf '%s' "$TASK" | grep -qiE "plan|roadmap|sprint|timeline|milestone"; then
         FALLBACK_TEAM="planner"
-    elif echo "$TASK" | grep -qiE "security|owasp|vuln|auth|pen.?test"; then
+    elif printf '%s' "$TASK" | grep -qiE "security|owasp|vuln|auth|pen.?test"; then
         FALLBACK_TEAM="security"
     fi
 
@@ -358,6 +376,39 @@ print(json.dumps(plan))
 fi
 
 printf '%s' "$DECOMPOSED" > "${WORK_DIR}/plan.json"
+
+# ── 3b. --dry-run: show plan and exit ────────────────────────────────────────
+if [[ "$FLAG_DRY_RUN" -eq 1 ]]; then
+    echo "" >&2
+    echo "==> [dispatch] --dry-run: showing plan only (no execution)" >&2
+    echo "" >&2
+    python3 - << 'DRYEOF'
+import json, os, sys
+
+work_dir = os.environ["DISPATCH_WORK_DIR"]
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+with open(f"{work_dir}/plan.json", encoding='utf-8') as f:
+    plan = json.load(f)
+
+summary = plan.get("task_summary", "(no summary)")
+tasks = plan.get("team_tasks", [])
+synth = plan.get("synthesis_instruction", "(none)")
+
+print(f"Task: {summary}\n")
+print(f"Teams ({len(tasks)}):")
+for i, t in enumerate(tasks, 1):
+    team = t.get("team", "?")
+    subtask = t.get("subtask", "?")
+    print(f"  {i}. [{team}] {subtask[:120]}")
+print(f"\nSynthesis instruction: {synth}")
+DRYEOF
+    log_action "dispatch" "orchestrator" "dispatch.sh" "DRY-RUN" "$SUMMARY"
+    log_session_end
+    exit 0
+fi
 
 # ── 4. Run teams in parallel ───────────────────────────────────────────────────
 echo "" >&2
@@ -388,7 +439,8 @@ print(f"--> Teams: {len(team_tasks)} running in parallel...", file=sys.stderr)
 
 VALID_TEAMS = {
     "frontend", "backend", "devops", "security", "qa",
-    "mobile", "data", "aiml", "analyst", "strategy", "writer", "planner"
+    "mobile", "data", "aiml", "analyst", "strategy", "writer", "planner",
+    "marketing", "legal", "risk", "finance", "researcher"
 }
 
 results = {}
@@ -418,7 +470,7 @@ def run_team(idx_task):
             ["bash", lead_script, subtask],
             capture_output=True,
             text=True,
-            timeout=90,
+            timeout=300,
             encoding='utf-8',
             errors='replace',
         )
@@ -429,8 +481,8 @@ def run_team(idx_task):
         print(f"  OK [{team:<12}] done", file=sys.stderr)
         return (idx, team, subtask, output)
     except subprocess.TimeoutExpired:
-        print(f"  TIMEOUT [{team:<12}] after 90s", file=sys.stderr)
-        return (idx, team, subtask, f"[{team} timed out after 90s]")
+        print(f"  TIMEOUT [{team:<12}] after 300s", file=sys.stderr)
+        return (idx, team, subtask, f"[{team} timed out after 300s]")
     except Exception as e:
         print(f"  ERROR [{team:<12}] {e}", file=sys.stderr)
         return (idx, team, subtask, f"[{team} error: {e}]")
@@ -475,13 +527,23 @@ FINAL=$(
     "${SCRIPT_DIR}/call_model.sh" "openai/gpt-4o" < "${WORK_DIR}/combined.txt" 2>/dev/null || true
 )
 
-if [[ -z "$FINAL" ]] || echo "$FINAL" | grep -qi "^API Error\|^Error:"; then
+if [[ -z "$FINAL" ]] || printf '%s' "$FINAL" | grep -qi "^API Error\|^Error:"; then
     echo "Warning: [dispatch] Synthesizer failed — outputting combined results directly." >&2
     cat "${WORK_DIR}/combined.txt"
     FINAL_MODEL="(fallback: raw combined output)"
 else
-    echo "$FINAL"
+    printf '%s\n' "$FINAL"
     FINAL_MODEL="openai/gpt-4o"
+fi
+
+# ── 5b. Save result to cache (atomic write via .tmp + mv) ────────────────────
+if [[ -n "$FINAL" && "$FLAG_NO_CACHE" -eq 0 ]]; then
+    CACHE_TMP="${CACHE_FILE}.tmp.$$"
+    if printf '%s' "$FINAL" > "$CACHE_TMP" 2>/dev/null; then
+        mv -f "$CACHE_TMP" "$CACHE_FILE" 2>/dev/null || rm -f "$CACHE_TMP" || true
+    else
+        rm -f "$CACHE_TMP" || true
+    fi
 fi
 
 # ── 6. --audit: run audit/lead.sh after synthesis ─────────────────────────────
@@ -498,11 +560,8 @@ if [[ "$FLAG_AUDIT" -eq 1 ]]; then
         AUDIT_OUTPUT=$(printf '%b' "$AUDIT_INPUT" | "$AUDIT_SCRIPT" 2>/dev/null || true)
 
         if [[ -n "$AUDIT_OUTPUT" ]]; then
-            echo ""
-            echo "---"
-            echo "## Audit Report"
-            echo ""
-            echo "$AUDIT_OUTPUT"
+            printf '\n---\n## Audit Report\n\n'
+            printf '%s\n' "$AUDIT_OUTPUT"
         fi
     fi
 fi
@@ -532,7 +591,8 @@ try:
     print("## Кто что сделал\n")
     print("| Команда | Модель | Задача | Статус |")
     print("|---------|--------|--------|--------|")
-    print("| Tech Lead (Claude) | claude-sonnet-4-6 | Оркестрация | OK |")
+    claude_model = os.environ.get("CLAUDE_MODEL", os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"))
+    print(f"| Tech Lead (Claude) | {claude_model} | Оркестрация | OK |")
     print("| decomposer | deepseek-chat | Декомпозиция задачи на команды | OK |")
 
     if flag_new_project:
