@@ -1,5 +1,5 @@
 # Team Memory: mobile
-Last updated: 2026-03-26
+Last updated: 2026-03-29 18:21
 
 ## Accumulated Knowledge
 - Always test on real devices, not just simulators
@@ -7,3 +7,4 @@ Last updated: 2026-03-26
 - Battery: avoid unnecessary background tasks and location polling
 - iOS: follow HIG guidelines; Android: follow Material Design
 - App startup: target < 2s cold start
+- [2026-03-29 18:21] 2026-03-29: Implement all mobile optimizations including touch targets, viewport settings, a

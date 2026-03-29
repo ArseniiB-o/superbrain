@@ -287,13 +287,14 @@ Output format (raw JSON only):
 if [[ -n "$FORCED_TEAMS" ]]; then
     echo "--> [dispatch] Using forced teams: $FORCED_TEAMS" >&2
 
+    # Write teams list to env var and pass task file path via env to avoid ARG_MAX / quoting issues
     _FORCED_TEAMS_VAL="$FORCED_TEAMS"
-    _TASK_VAL="$(cat "$TASK_FILE")"
 
-    DECOMPOSED=$(python3 -c "
-import json, sys
-teams_raw = sys.argv[1]
-task = sys.argv[2]
+    DECOMPOSED=$(FORCED_TEAMS_ENV="$_FORCED_TEAMS_VAL" TASK_FILE_ENV="$TASK_FILE" python3 << 'FORCED_PYEOF'
+import json, os
+teams_raw = os.environ.get("FORCED_TEAMS_ENV", "")
+task_file = os.environ.get("TASK_FILE_ENV", "")
+task = open(task_file, encoding='utf-8').read() if task_file else ""
 teams = [t.strip() for t in teams_raw.split(',') if t.strip()]
 plan = {
     'task_summary': task[:100],
@@ -301,7 +302,8 @@ plan = {
     'synthesis_instruction': 'Combine all team outputs into a comprehensive, structured answer. Avoid repetition.'
 }
 print(json.dumps(plan))
-" "$_FORCED_TEAMS_VAL" "$_TASK_VAL")
+FORCED_PYEOF
+)
 else
     # Call decomposer via call_model.sh (deepseek-chat)
     DECOMPOSED=$(
@@ -311,9 +313,13 @@ else
 fi
 
 # ── Validate decomposer JSON ───────────────────────────────────────────────────
-PLAN_VALID=$(python3 - "$DECOMPOSED" << 'PYEOF'
-import json, sys
-raw = sys.argv[1] if len(sys.argv) > 1 else ""
+# Write DECOMPOSED to a temp file to avoid ARG_MAX limits and shell quoting issues
+_DECOMPOSED_TMP="${WORK_DIR}/decomposed_raw.json"
+printf '%s' "$DECOMPOSED" > "$_DECOMPOSED_TMP"
+
+PLAN_VALID=$(DECOMPOSED_FILE="$_DECOMPOSED_TMP" python3 << 'PYEOF'
+import json, os
+raw = open(os.environ['DECOMPOSED_FILE'], encoding='utf-8').read()
 try:
     # Strip markdown fences if present
     if raw.strip().startswith("```"):
@@ -329,9 +335,9 @@ PYEOF
 )
 
 # Strip markdown fences from DECOMPOSED before further use
-DECOMPOSED=$(python3 - "$DECOMPOSED" << 'PYEOF'
-import json, sys
-raw = sys.argv[1] if len(sys.argv) > 1 else ""
+DECOMPOSED=$(DECOMPOSED_FILE="$_DECOMPOSED_TMP" python3 << 'PYEOF'
+import json, os
+raw = open(os.environ['DECOMPOSED_FILE'], encoding='utf-8').read()
 try:
     if raw.strip().startswith("```"):
         lines = raw.strip().splitlines()
@@ -361,18 +367,21 @@ if [[ "$PLAN_VALID" != "ok" ]]; then
         FALLBACK_TEAM="security"
     fi
 
-    DECOMPOSED=$(python3 -c "
-import json, sys
-task = sys.argv[1]
-summary = sys.argv[2]
-team = sys.argv[3]
+    # Use env vars to pass data to Python to avoid ARG_MAX limits with large task content
+    DECOMPOSED=$(FALLBACK_TEAM_ENV="$FALLBACK_TEAM" SUMMARY_ENV="$SUMMARY" TASK_FILE_ENV="$TASK_FILE" python3 << 'FALLBACK_PYEOF'
+import json, os
+task_file = os.environ.get("TASK_FILE_ENV", "")
+task = open(task_file, encoding='utf-8').read() if task_file else ""
+summary = os.environ.get("SUMMARY_ENV", task[:100])
+team = os.environ.get("FALLBACK_TEAM_ENV", "backend")
 plan = {
     'task_summary': summary[:100],
     'team_tasks': [{'team': team, 'subtask': task}],
-    'synthesis_instruction': \"Present the team's response clearly and completely.\"
+    'synthesis_instruction': "Present the team's response clearly and completely."
 }
 print(json.dumps(plan))
-" "$TASK" "$SUMMARY" "$FALLBACK_TEAM")
+FALLBACK_PYEOF
+)
 fi
 
 printf '%s' "$DECOMPOSED" > "${WORK_DIR}/plan.json"
@@ -443,12 +452,27 @@ VALID_TEAMS = {
     "marketing", "legal", "risk", "finance", "researcher"
 }
 
+# Aliases: map CLAUDE.md user-facing names to internal team names
+TEAM_ALIASES = {
+    "business":      "analyst",
+    "content":       "writer",
+    "planning":      "planner",
+    "architecture":  "backend",
+    "audit":         "security",
+}
+
 results = {}
 
 def run_team(idx_task):
     idx, task_item = idx_task
     team    = task_item.get("team", "backend").strip()
     subtask = task_item.get("subtask", "")
+
+    # Resolve aliases before validation
+    if team in TEAM_ALIASES:
+        resolved = TEAM_ALIASES[team]
+        print(f"  Info: team alias '{team}' -> '{resolved}'", file=sys.stderr)
+        team = resolved
 
     if team not in VALID_TEAMS:
         print(f"  Warning: unknown team '{team}', routing to backend", file=sys.stderr)
