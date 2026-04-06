@@ -129,6 +129,19 @@ fi
 TASK=$(cat "$TASK_FILE")
 SUMMARY="${TASK:0:100}"
 
+# ── Read active mode for display ──────────────────────────────────────────────
+MODE_FILE="${SCRIPT_DIR}/.mode"
+ACTIVE_MODE="openrouter"
+if [[ -f "$MODE_FILE" ]]; then
+    ACTIVE_MODE=$(cat "$MODE_FILE" | tr -d '[:space:]')
+fi
+case "$ACTIVE_MODE" in
+    claude)     MODE_LABEL="🤖 CLAUDE SONNET (subscription)" ;;
+    openrouter) MODE_LABEL="🌐 OPENROUTER (mixed models)" ;;
+    *)          MODE_LABEL="❓ UNKNOWN ($ACTIVE_MODE)" ;;
+esac
+export DISPATCH_ACTIVE_MODE="$ACTIVE_MODE"
+
 # ── Auto-audit keyword detection ──────────────────────────────────────────────
 if [[ "$FLAG_AUDIT" -eq 0 ]]; then
     TASK_LOWER=$(printf '%s' "$TASK" | tr '[:upper:]' '[:lower:]')
@@ -146,6 +159,7 @@ log_action "dispatch" "orchestrator" "dispatch.sh" "RUNNING" "$SUMMARY"
 
 echo "" >&2
 echo "==> [dispatch v2] Task received: ${SUMMARY}..." >&2
+echo "==> [dispatch v2] Mode: ${MODE_LABEL}" >&2
 echo "" >&2
 
 # ── 1b. Response cache check ─────────────────────────────────────────────────
