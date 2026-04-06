@@ -97,6 +97,18 @@ else
 fi
 export DISPATCH_NO_PE="$FLAG_NO_PE"
 
+# ── Auto-audit: force --audit for security-adjacent tasks ─────────────────────
+# Keywords that always warrant an audit pass (case-insensitive match against task)
+_AUTO_AUDIT_KEYWORDS=(
+    "auth" "security" "payment" "password" "token" "secret" "key" "encrypt"
+    "user data" "personal data" "gdpr" "dsgvo" "compliance" "vulnerability"
+    "production" "deploy" "release" "inject" "sql" "xss" "csrf" "owasp"
+    "sensitive" "credential" "private" "permissions" "access control" "login"
+    "jwt" "oauth" "session" "cookie" "api key" "webhook" "signature"
+    "review" "audit" "check" "is this correct" "is this good" "evaluate"
+    "correct?" "right?" "secure?" "safe?" "проверь" "правильно" "аудит"
+)
+
 # ── Ensure UTF-8 for Python on Windows ────────────────────────────────────────
 export PYTHONUTF8=1
 
@@ -116,6 +128,18 @@ fi
 
 TASK=$(cat "$TASK_FILE")
 SUMMARY="${TASK:0:100}"
+
+# ── Auto-audit keyword detection ──────────────────────────────────────────────
+if [[ "$FLAG_AUDIT" -eq 0 ]]; then
+    TASK_LOWER=$(printf '%s' "$TASK" | tr '[:upper:]' '[:lower:]')
+    for _kw in "${_AUTO_AUDIT_KEYWORDS[@]}"; do
+        if [[ "$TASK_LOWER" == *"$_kw"* ]]; then
+            FLAG_AUDIT=1
+            echo "--> [dispatch] Auto-audit activated: keyword '$_kw' detected in task." >&2
+            break
+        fi
+    done
+fi
 
 log_session_start
 log_action "dispatch" "orchestrator" "dispatch.sh" "RUNNING" "$SUMMARY"
@@ -250,28 +274,36 @@ echo "--> [dispatch] Decomposing task into team subtasks..." >&2
 DECOMPOSER_SYSTEM='You are a master task router for a team of AI specialists. Your job: analyze any task and route subtasks to the right specialist teams. Return ONLY valid JSON, no markdown, no code fences, no explanation.
 
 Teams available:
-- frontend   : UI/UX, React, Vue, CSS, accessibility, web performance
-- backend    : APIs, databases, business logic, server-side, microservices
-- devops     : CI/CD, Docker, Kubernetes, infrastructure, deployment, monitoring
-- security   : OWASP audit, penetration testing, vulnerabilities, auth review, threat modeling
-- qa         : unit tests, integration tests, E2E, test plans, edge cases, quality assurance
-- mobile     : iOS, Android, React Native, Flutter, mobile UX, app store
-- data       : database design, SQL optimization, data pipelines, analytics, schema design
-- aiml       : ML models, training, inference, AI architecture, LLM integration, embeddings
-- analyst    : business analysis, market research, metrics, competitive analysis, insights
-- strategy   : business strategy, GTM, positioning, roadmap, competitive advantage
-- writer     : copywriting, documentation, reports, blog posts, emails, content
-- planner    : project planning, sprint planning, decomposition, timelines, task management
-- marketing  : TAM/SAM/SOM analysis, acquisition channels, brand positioning, growth metrics, customer personas
-- legal      : GDPR, EU AI Act, compliance, contracts, IP law, regulatory requirements, licensing
-- risk       : risk register, probability/impact matrix, mitigation strategies, business continuity
-- finance    : financial modeling, unit economics, CAC/LTV, burn rate, pricing strategy, fundraising
-- researcher : market research with real sources, statistics, case studies, competitor intelligence
+- frontend      : UI/UX, React, Vue, CSS, accessibility, web performance, SSR/SSG
+- backend       : APIs, databases, business logic, server-side, microservices, auth
+- devops        : CI/CD, Docker, Kubernetes, infrastructure, deployment, monitoring
+- security      : OWASP audit, penetration testing, vulnerabilities, auth review, threat modeling
+- qa            : unit tests, integration tests, E2E, test plans, edge cases, quality assurance
+- mobile        : iOS, Android, React Native, Flutter, mobile UX, app store
+- data          : database design, SQL optimization, data pipelines, analytics, schema design
+- aiml          : ML models, training, inference, AI architecture, LLM integration, embeddings, RAG
+- analyst       : business analysis, market research, metrics, competitive analysis, insights
+- strategy      : business strategy, GTM, positioning, roadmap, competitive advantage
+- writer        : copywriting, documentation, reports, blog posts, emails, content, marketing copy
+- planner       : project planning, sprint planning, decomposition, timelines, task management
+- marketing     : TAM/SAM/SOM analysis, acquisition channels, brand positioning, growth metrics, customer personas
+- legal         : GDPR, EU AI Act, compliance, contracts, IP law, regulatory requirements, licensing
+- risk          : risk register, probability/impact matrix, mitigation strategies, business continuity
+- finance       : financial modeling, unit economics, CAC/LTV, burn rate, pricing strategy, fundraising
+- researcher    : market research with real sources, statistics, case studies, competitor intelligence
+- payments      : Stripe, payment flows, billing, invoicing, PCI DSS, subscription models
+- performance   : profiling, Core Web Vitals, load time, memory optimization, caching
+- accessibility : WCAG 2.1/2.2, screen readers, a11y testing, inclusive design
+- i18n          : internationalization, localization, RTL support, translation workflows
+- ux            : user research, usability testing, conversion optimization, UX writing
+- embedded      : embedded systems, RTOS, hardware interfaces, firmware, IoT, drones
+- blockchain    : smart contracts, Web3, token economics, DeFi, NFT, decentralized systems
 
 Rules:
-1. Pick 2-5 most relevant teams. Each subtask must be self-contained and independent.
-2. Make subtasks specific — the team must understand the subtask without seeing others.
-3. synthesis_instruction tells the synthesizer HOW to combine all team outputs.
+1. Pick 4-8 most relevant teams. NEVER fewer than 4 unless the task is provably single-domain (and even then pick 4). For complex/business/architectural tasks, use 6-10+ teams. More teams = better coverage = higher quality output.
+2. Always include security team for ANY technical task. Always include legal+risk for ANY business task.
+3. Make subtasks specific — the team must understand the subtask without seeing others.
+4. synthesis_instruction tells the synthesizer HOW to combine all team outputs — be detailed and specific about structure.
 
 Output format (raw JSON only):
 {
@@ -449,7 +481,9 @@ print(f"--> Teams: {len(team_tasks)} running in parallel...", file=sys.stderr)
 VALID_TEAMS = {
     "frontend", "backend", "devops", "security", "qa",
     "mobile", "data", "aiml", "analyst", "strategy", "writer", "planner",
-    "marketing", "legal", "risk", "finance", "researcher"
+    "marketing", "legal", "risk", "finance", "researcher",
+    "payments", "performance", "accessibility", "i18n", "ux",
+    "embedded", "blockchain"
 }
 
 # Aliases: map CLAUDE.md user-facing names to internal team names
@@ -459,6 +493,14 @@ TEAM_ALIASES = {
     "planning":      "planner",
     "architecture":  "backend",
     "audit":         "security",
+    "perf":          "performance",
+    "a11y":          "accessibility",
+    "localization":  "i18n",
+    "billing":       "payments",
+    "stripe":        "payments",
+    "hardware":      "embedded",
+    "drone":         "embedded",
+    "web3":          "blockchain",
 }
 
 results = {}
@@ -511,7 +553,7 @@ def run_team(idx_task):
         print(f"  ERROR [{team:<12}] {e}", file=sys.stderr)
         return (idx, team, subtask, f"[{team} error: {e}]")
 
-with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
     futures = [executor.submit(run_team, (i, t)) for i, t in enumerate(team_tasks)]
     for future in concurrent.futures.as_completed(futures):
         idx, team, subtask, output = future.result()

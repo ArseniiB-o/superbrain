@@ -138,6 +138,62 @@
         "fallback1": "deepseek/deepseek-chat",
         "fallback2": "google/gemini-2.0-flash-001"
       }
+    },
+    "payments": {
+      "description": "Stripe, payment flows, billing, invoicing, PCI DSS, SCA/3DS2, subscription models",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "performance": {
+      "description": "Core Web Vitals, profiling, load time, memory optimization, APM, load testing",
+      "models": {
+        "primary": "openai/gpt-4o-mini",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "accessibility": {
+      "description": "WCAG 2.1/2.2, screen readers, a11y testing, EU Accessibility Act 2025, inclusive design",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "i18n": {
+      "description": "Internationalization, localization, RTL support, translation workflows, ICU format",
+      "models": {
+        "primary": "openai/gpt-4o-mini",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "google/gemini-2.0-flash-001"
+      }
+    },
+    "ux": {
+      "description": "User research, usability testing, CRO, UX design, Jobs-to-be-Done, heuristic evaluation",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "embedded": {
+      "description": "RTOS, firmware, flight controllers, sensor fusion, edge computing, IoT, drones, MAVLink",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
+    },
+    "blockchain": {
+      "description": "Smart contracts, Solidity, Web3, tokenomics, DeFi, NFT, EU MiCA compliance",
+      "models": {
+        "primary": "openai/gpt-4o",
+        "fallback1": "deepseek/deepseek-chat",
+        "fallback2": "openai/gpt-4o-mini"
+      }
     }
   },
   "orchestration": {
@@ -170,8 +226,8 @@
     "max_retries": 3
   },
   "orchestration_limits": {
-    "max_parallel_teams": 6,
-    "max_doc_concurrency": 5,
+    "max_parallel_teams": 12,
+    "max_doc_concurrency": 8,
     "team_timeout_seconds": 300,
     "cache_ttl_seconds": 3600
   },
