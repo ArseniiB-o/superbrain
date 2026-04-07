@@ -142,6 +142,12 @@ case "$ACTIVE_MODE" in
 esac
 export DISPATCH_ACTIVE_MODE="$ACTIVE_MODE"
 
+# ── Claude mode: auto-skip PE (Sonnet understands prompts natively; PE causes hangs) ──
+if [[ "$ACTIVE_MODE" == "claude" && "$FLAG_NO_PE" -eq 0 ]]; then
+    FLAG_NO_PE=1
+    export DISPATCH_NO_PE=1
+fi
+
 # ── Auto-audit keyword detection ──────────────────────────────────────────────
 if [[ "$FLAG_AUDIT" -eq 0 ]]; then
     TASK_LOWER=$(printf '%s' "$TASK" | tr '[:upper:]' '[:lower:]')
